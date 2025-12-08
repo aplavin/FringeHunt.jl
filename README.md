@@ -43,6 +43,8 @@ julia> FringeHunt.interactive("path/to/your/data.fitsidi")
 # - Click on individual fringes to inspect the raw data
 ```
 
+`FringeHunt` only loads data for a single source into memory at a time, so it can efficiently handle large files with many sources.
+
 ## Built On 🏗️
 
 FringeHunt.jl is built on top of several powerful Julia packages:
