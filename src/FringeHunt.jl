@@ -114,8 +114,6 @@ function interactive(file)
     MakieExtra.show_gl_icon_in_dock()
 end
 
-Base.getproperty(f::AxFunc, s::Symbol) = hasfield(typeof(f), s) ? getfield(f, s) : getproperty(f.attrs, s)
-
 
 UV_from_uvrow(r) =
 	UV(
