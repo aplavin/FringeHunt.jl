@@ -2,7 +2,7 @@
 
 julia_version = "1.10.10"
 manifest_format = "2.0"
-project_hash = "b49be3da2de1fd879e3e6d19b3677f00740ab18b"
+project_hash = "74d0f2c55d6d9f95e9e041b7da285a9190dac403"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1040,7 +1040,7 @@ version = "0.9.5"
 
 [[deps.MakieExtra]]
 deps = ["AccessorsExtra", "DataManipulation", "InverseFunctions", "KwdefHelpers", "LinearAlgebra", "Makie", "NonNegLeastSquares", "PyFormattedStrings", "Reexport", "StructHelpers"]
-git-tree-sha1 = "caf3842275e1b0aaa28c9623da7fb4052b90f0b6"
+git-tree-sha1 = "54b0189fc7406e714cee965e480d1808a93f3dac"
 uuid = "54e234d5-9986-40d8-815f-a5e42de435f6"
 version = "0.1.68"
 

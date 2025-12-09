@@ -45,6 +45,8 @@ julia> FringeHunt.interactive("path/to/your/data.fitsidi")
 
 `FringeHunt` only loads data for a single source into memory at a time, so it can efficiently handle large files with many sources.
 
+The future vision is to integrate `FringeHunt` with `VLBInspect.jl` in some way.
+
 ## Built On 🏗️
 
 FringeHunt.jl is built on top of several powerful Julia packages:
