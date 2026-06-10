@@ -210,9 +210,10 @@ function ensure_block_cache!(app::AppState)
     fringe = r.fringefits[app.selected]
     block = compute_selected_block(r.uvdata_src, fringe)
     fab = fringefit_single(block; pad_factor=Int(app.pad_factor))
-    app.cache_block = abs.(block)
-    app.cache_phase = angle.(block)
-    app.cache_fabs = fab.fabs
+    # stored transposed (image! maps dim1 → x): horizontal = time/rate, vertical = freq/delay
+    app.cache_block = permutedims(abs.(block))
+    app.cache_phase = permutedims(angle.(block))
+    app.cache_fabs = permutedims(fab.fabs)
     app.cache_peak = fab.peakloc
     app.cache_key = key
     app.refit_axes = true
@@ -234,11 +235,32 @@ end
 # Closed interval spanning the first..last axis key (unit-stripped), for image! extents.
 _axis_interval(ax, unit) = (v = ustrip.(unit, ax); minimum(v) .. maximum(v))
 
+# Pixel-edge bounds of an `n`-cell image spanning `int` (cell centers) — matches what `image!` draws.
+_image_bounds(int, n) = (a = leftendpoint(int); b = rightendpoint(int);
+                         Δ = n > 1 ? (b - a) / (n - 1) : (b > a ? b - a : one(b)); (a - Δ/2, b + Δ/2))
+
+# Clamp a heatmap's pan/zoom to the image extent. The constraint must be the *image* bounds (½ cell
+# beyond the key range), not the key range itself: `SetNextAxesToFit` fits to the image quad, and a
+# fit target even slightly outside the constraint is rejected wholesale (so the fit silently no-ops).
+function _heatmap_constraints(xint, yint, data)
+    bx = _image_bounds(xint, size(data, 1))
+    by = _image_bounds(yint, size(data, 2))
+    ImPlot.SetupAxisLimitsConstraints(ImPlot.ImAxis_X1, bx...)
+    ImPlot.SetupAxisLimitsConstraints(ImPlot.ImAxis_Y1, by...)
+end
+
 function draw_controls!(app::AppState)
     CImGui.Begin("Controls")
-    sel = Ref(app.sel_source)
-    CImGui.Combo("Source", sel, app.source_names, length(app.source_names))
-    app.sel_source = sel[]
+    if CImGui.BeginTable("##sources", 2)
+        for (i, name) in enumerate(app.source_names)
+            CImGui.TableNextRow()
+            CImGui.TableNextColumn()
+            CImGui.RadioButton("##src$i", app.sel_source == i - 1) && (app.sel_source = Cint(i - 1))
+            CImGui.TableNextColumn()
+            CImGui.Text(name)
+        end
+        CImGui.EndTable()
+    end
 
     pf = Ref(app.pad_factor)
     CImGui.SliderInt("FFT oversampling", pf, Cint(1), Cint(10))
@@ -251,7 +273,7 @@ function draw_controls!(app::AppState)
 
     if running
         CImGui.SameLine()
-        CImGui.ProgressBar(Cfloat(app.fl.fraction[]), CImGui.ImVec2(-1, 0))
+        CImGui.ProgressBar(Cfloat(app.fl.fraction[]), CImGui.ImVec2(-1, 0), "")
     elseif (r = app.shown) !== nothing
         CImGui.Text("$(length(r.fringefits)) fringes fitted")
         if app.selected != 0
@@ -270,8 +292,12 @@ function draw_uvsnr!(app::AppState)
     r = app.shown
     if isnothing(r)
         CImGui.Text("Press Compute to fit fringes.")
-    elseif ImPlot.BeginPlot("##uvsnr", "UV distance (km)", "SNR", CImGui.ImVec2(-1, -1))
+    elseif ImPlot.BeginPlot("##uvsnr", "UV distance (km)", "SNR", CImGui.ImVec2(-1, -1); flags=ImPlot.ImPlotFlags_NoLegend)
         ImPlot.SetupAxisScale(ImPlot.ImAxis_Y1, ImPlot.ImPlotScale_SymLog)
+        if !isempty(r.x)
+            ImPlot.SetupAxisLimitsConstraints(ImPlot.ImAxis_X1, 0, maximum(r.x) * 1.1)
+            ImPlot.SetupAxisLimitsConstraints(ImPlot.ImAxis_Y1, 0, maximum(r.y) * 1.1)
+        end
         colors = app.fr_colors
         GC.@preserve colors begin
             spec = ImPlot.ImPlotSpec(Marker=ImPlot.ImPlotMarker_Circle, MarkerFillColors=pointer(colors))
@@ -310,43 +336,45 @@ function draw_heatmaps!(app::AppState)
     refit = app.refit_axes
     app.refit_axes = false
 
-    fabs = app.cache_fabs
-    dx = _axis_interval(axiskeys(fabs, :delay), u"ns")
-    dy = _axis_interval(axiskeys(fabs, :rate), u"mHz")
-    peak_d = ustrip(u"ns", app.cache_peak.delay)
-    peak_r = ustrip(u"mHz", app.cache_peak.rate)
+    fabs = app.cache_fabs                                        # (rate, delay): rate horizontal, delay vertical
+    rate_int  = _axis_interval(axiskeys(fabs, :rate), u"mHz")
+    delay_int = _axis_interval(axiskeys(fabs, :delay), u"ns")
+    peak_rate  = ustrip(u"mHz", app.cache_peak.rate)
+    peak_delay = ustrip(u"ns", app.cache_peak.delay)
 
-    afit = ImPlot.ImPlotAxisFlags_AutoFit
     avail = CImGui.GetContentRegionAvail()
     top_h = avail.y * 0.55f0
 
-    refit && ImPlot.SetNextAxesToFit()
-    if ImPlot.BeginPlot("Fringe Amplitude", "delay (ns)", "rate (mHz)", CImGui.ImVec2(-1, top_h);
-                        x_flags=afit, y_flags=afit)
-        ImPlotExtra.image!("fringe", dx, dy, fabs; colormap=:viridis, colorscale=log10)
-        ImPlot.PlotInfLines("##peakd", [peak_d])
-        ImPlot.PlotInfLines("##peakr", [peak_r]; spec=ImPlot.ImPlotSpec(Flags=ImPlot.ImPlotInfLinesFlags_Horizontal))
+    refit && ImPlot.SetNextAxesToFit()   # fit once on change; otherwise the user can zoom/pan freely within bounds
+    if ImPlot.BeginPlot("Fringe Amplitude", "rate (mHz)", "delay (ns)", CImGui.ImVec2(-1, top_h);
+                        flags=ImPlot.ImPlotFlags_NoLegend)
+        _heatmap_constraints(rate_int, delay_int, fabs)
+        ImPlotExtra.image!("fringe", rate_int, delay_int, fabs; colormap=:viridis, colorscale=log10, interpolate=false)
+        ImPlot.PlotInfLines("##peakrate", [peak_rate])
+        ImPlot.PlotInfLines("##peakdelay", [peak_delay]; spec=ImPlot.ImPlotSpec(Flags=ImPlot.ImPlotInfLinesFlags_Horizontal))
         ImPlot.EndPlot()
     end
 
-    block = app.cache_block
+    block = app.cache_block                                      # (time, freq): time horizontal, freq vertical
     phase = app.cache_phase
-    fx = _axis_interval(axiskeys(block, :freq), u"GHz")
-    ty = _axis_interval(axiskeys(block, :time), u"s")
+    time_int = _axis_interval(axiskeys(block, :time), u"s")
+    freq_int = _axis_interval(axiskeys(block, :freq), u"GHz")
     half_w = CImGui.GetContentRegionAvail().x * 0.5f0 - 4
 
     refit && ImPlot.SetNextAxesToFit()
-    if ImPlot.BeginPlot("Data Amplitude", "freq (GHz)", "time (s)", CImGui.ImVec2(half_w, -1);
-                        x_flags=afit, y_flags=afit)
-        ImPlotExtra.image!("amp", fx, ty, block; colormap=:viridis)
+    if ImPlot.BeginPlot("Data Amplitude", "time (s)", "freq (GHz)", CImGui.ImVec2(half_w, -1);
+                        flags=ImPlot.ImPlotFlags_NoLegend)
+        _heatmap_constraints(time_int, freq_int, block)
+        ImPlotExtra.image!("amp", time_int, freq_int, block; colormap=:viridis, interpolate=false)
         ImPlot.EndPlot()
     end
     CImGui.SameLine()
     refit && ImPlot.SetNextAxesToFit()
-    if ImPlot.BeginPlot("Data Phase", "freq (GHz)", "time (s)", CImGui.ImVec2(-1, -1);
-                        x_flags=afit, y_flags=afit)
-        ImPlotExtra.image!("phase", fx, ty, phase; colormap=:twilight,
-                           colorrange=(-Float32(pi), Float32(pi)))
+    if ImPlot.BeginPlot("Data Phase", "time (s)", "freq (GHz)", CImGui.ImVec2(-1, -1);
+                        flags=ImPlot.ImPlotFlags_NoLegend)
+        _heatmap_constraints(time_int, freq_int, phase)
+        ImPlotExtra.image!("phase", time_int, freq_int, phase; colormap=:twilight,
+                           colorrange=(-Float32(pi), Float32(pi)), interpolate=false)
         ImPlot.EndPlot()
     end
     CImGui.End()
