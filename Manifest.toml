@@ -2,7 +2,7 @@
 
 julia_version = "1.10.11"
 manifest_format = "2.0"
-project_hash = "743e73a966e8d8e68cf2be4a2abe0b19bc9dcd73"
+project_hash = "535bad16f4ddfcb4339202cd4cb429027900dc8a"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -594,7 +594,7 @@ uuid = "e8efc688-5342-4ad4-b4ba-9025a731b363"
 version = "0.8.0"
 
 [[deps.ImPlotExtra]]
-deps = ["CImGui", "ColorSchemes", "ColorTypes", "FixedPointNumbers", "ImPlot", "IntervalSets", "ModernGL"]
+deps = ["CImGui", "ColorSchemes", "ColorTypes", "FixedPointNumbers", "ImPlot", "IntervalSets"]
 path = "/Users/aplavin/.julia/dev/ImPlotExtra"
 uuid = "bf2a09a8-fe43-4b24-a47f-d3d0370c11fb"
 version = "0.1.0"
