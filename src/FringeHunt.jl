@@ -122,9 +122,8 @@ end
 # atomic reference); `running`/`fraction` are atomic. Everything else is render-thread-only.
 mutable struct AppState
     const uvd
-    const source_ids::Vector{Int}                 # source_id per dropdown entry, sorted by name
-    const source_names::Vector{String}            # dropdown labels (parallel to source_ids)
-    sel_source::Cint                              # 0-based combo index into source_ids
+    @atomic source_table::Union{Nothing,StructVector}   # (id, name, nscans, nvis) per source; nothing until loaded
+    sel_source::Cint                              # 0-based row index into source_table
     pad_factor::Cint                              # FFT oversampling slider (1..10)
 
     @atomic result::Union{Nothing,FitResult}      # published by the compute task
@@ -146,14 +145,26 @@ mutable struct AppState
 end
 
 function AppState(uvd)
-    srcs = sources(uvd)
-    order = sortperm([v.name for v in values(srcs)])
-    ids = collect(keys(srcs))[order]
-    names = [srcs[i].name for i in ids]
-    AppState(uvd, ids, names, Cint(0), Cint(4),
-             nothing, nothing, CImGui.ImU32[], 0,
-             Threads.Atomic{Bool}(false), FractionLogger(), nothing,
-             nothing, nothing, nothing, nothing, nothing, false)
+    app = AppState(uvd, nothing, Cint(0), Cint(4),
+                   nothing, nothing, CImGui.ImU32[], 0,
+                   Threads.Atomic{Bool}(false), FractionLogger(), nothing,
+                   nothing, nothing, nothing, nothing, nothing, false)
+    # populate the source table on a background thread (one lazy uvtable_wide + per-source scan/vis
+    # counts — visibility stays lazy), so the window opens immediately; published atomically when ready.
+    Threads.@spawn try
+        wt = uvtable_wide(uvd)
+        srcs = sources(uvd)
+        ids = sort(collect(keys(srcs)); by=sid -> srcs[sid].name)
+        @atomic app.source_table = StructArray(map(ids) do sid
+            sub = @p wt filter(@o _.source_id == sid)
+            (; id=sid, name=srcs[sid].name,
+               nscans=length(VLBI.scan_intervals(VLBI.GapBasedScans(30u"s"), sub)),
+               nvis=length(sub))
+        end)
+    catch e
+        @error "loading source table failed" exception=(e, catch_backtrace())
+    end
+    app
 end
 
 # Kick off the heavy fit on a background thread. The task does ONLY compute and publishes its
@@ -161,7 +172,9 @@ end
 # thread). The render loop polls `app.running` / `app.fl.fraction` each frame for the progress bar.
 function start_compute!(app::AppState)
     app.running[] && return
-    source_id = app.source_ids[app.sel_source + 1]
+    st = @atomic app.source_table
+    isnothing(st) && return                       # sources not loaded yet
+    source_id = st.id[app.sel_source + 1]
     app.fl.fraction[] = 0.0
     app.running[] = true
     app.task = Threads.@spawn begin
@@ -251,25 +264,30 @@ end
 
 function draw_controls!(app::AppState)
     CImGui.Begin("Controls")
-    if CImGui.BeginTable("##sources", 2)
-        for (i, name) in enumerate(app.source_names)
+    st = @atomic app.source_table
+    if isnothing(st)
+        CImGui.Text("Loading sources...")
+    elseif CImGui.BeginTable("##sources", 2)
+        for (i, s) in enumerate(st)
             CImGui.TableNextRow()
             CImGui.TableNextColumn()
-            CImGui.RadioButton("##src$i", app.sel_source == i - 1) && (app.sel_source = Cint(i - 1))
+            # the source name IS the radio-button label (clicking it selects); `##id` keeps the id unique
+            CImGui.RadioButton("$(s.name)##$(s.id)", app.sel_source == i - 1) && (app.sel_source = Cint(i - 1))
             CImGui.TableNextColumn()
-            CImGui.Text(name)
+            CImGui.Text("$(s.nscans) scans, $(s.nvis) vis")
         end
         CImGui.EndTable()
     end
 
     pf = Ref(app.pad_factor)
-    CImGui.SliderInt("FFT oversampling", pf, Cint(1), Cint(10))
+    CImGui.SliderInt("", pf, Cint(1), Cint(10), "FFT oversampling: %d×")
     app.pad_factor = pf[]
 
     running = app.running[]
-    running && CImGui.BeginDisabled()
+    busy = running || isnothing(st)               # can't compute until sources are loaded
+    busy && CImGui.BeginDisabled()
     CImGui.Button("Compute") && start_compute!(app)
-    running && CImGui.EndDisabled()
+    busy && CImGui.EndDisabled()
 
     if running
         CImGui.SameLine()
