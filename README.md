@@ -4,7 +4,7 @@ An interactive tool for quick fringe-finding and detection analysis of Very Long
 
 Perfect for mining archival observations for detections, and choosing which ones to proceed with for full calibration.
 
-https://github.com/user-attachments/assets/b4199040-c464-4a89-9eec-5975da2abd8a
+https://github.com/user-attachments/assets/f467c718-9f6e-4897-b428-49b8c8baa280
 
 ## Installation & Setup 🚀
 
