@@ -5,7 +5,9 @@ using TestItemRunner
 
 @testitem "_" begin
     import Aqua
-    Aqua.test_all(FringeHunt)
+    # skip persistent_tasks: it resolves the package in an isolated env, which can't see the
+    # unregistered git/dev deps (ImPlot fork, ImPlotExtra) and errors with "no known versions"
+    Aqua.test_all(FringeHunt; persistent_tasks=false)
 
     import CompatHelperLocal as CHL
     CHL.@check()
