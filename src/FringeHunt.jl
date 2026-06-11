@@ -164,6 +164,7 @@ mutable struct AppState
     fit_crosshands::Bool                          # compute setting: also fit RL/LR (applies on next Compute)
     x_quantity::Symbol                            # X axis: :uvdist or :time
     color_quantity::Symbol                        # marker color: :freq or :stokes
+    chance_exp::Cint                              # display: chance-probability cutoff line at P = 10^chance_exp (-6..0)
 
     @atomic result::Union{Nothing,FitResult}      # published by the compute task
     shown::Union{Nothing,FitResult}               # result the render thread has initialized for
@@ -187,7 +188,7 @@ mutable struct AppState
 end
 
 function AppState(uvd)
-    app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :uvdist, :freq,
+    app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :uvdist, :freq, Cint(-3),
                    nothing, nothing, CImGui.ImU32[], Tuple{String,CImGui.ImVec4}[], nothing, 0, false,
                    Threads.Atomic{Bool}(false), FractionLogger(), nothing,
                    nothing, nothing, nothing, nothing, nothing, false)
@@ -401,6 +402,11 @@ function draw_uvsnr!(app::AppState)
     newx == app.x_quantity || (app.x_quantity = newx; app.refit_scatter = true)   # refit once on axis change
     CImGui.SameLine(0, 30)
     app.color_quantity = radio_group("color:", app.color_quantity, COLOR_OPTIONS)
+    CImGui.SameLine(0, 30)
+    ce = Ref(app.chance_exp)                       # chance-probability cutoff line on the scatter
+    CImGui.SetNextItemWidth(200)
+    CImGui.SliderInt("##chance", ce, Cint(-6), Cint(0), "chance p: 1e%d")
+    app.chance_exp = ce[]
 
     ensure_colors!(app)
 
@@ -449,6 +455,14 @@ function draw_uvsnr!(app::AppState)
                 px = ImPlot.PlotToPixels(xs[i], ys[i])
                 (px.x - mpx.x)^2 + (px.y - mpx.y)^2
             end
+        end
+        # chance-probability cutoff: SNR s where N·exp(-½s²) = P (N = # cells), as a horizontal line + axis tag
+        if !isempty(ys)
+            N = median(r.points.ntrials)
+            scut = cquantile(Rayleigh(1), 10.0^app.chance_exp / N)
+            ImPlot.PlotInfLines("##chance", [scut];
+                spec=ImPlot.ImPlotSpec(Flags=ImPlot.ImPlotInfLinesFlags_Horizontal, LineColor=CImGui.ImVec4(1, 0, 0, 1)))
+            ImPlot.TagY(scut, CImGui.ImVec4(1, 0, 0, 1), string(round(scut; digits=1)))
         end
         ImPlot.EndPlot()
         # right pane: continuous colorbar (frequency) or a discrete swatch legend (stokes)

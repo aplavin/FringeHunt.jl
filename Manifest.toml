@@ -44,9 +44,9 @@ version = "0.1.44"
 
 [[deps.AccessorsExtra]]
 deps = ["Accessors", "CompositionsBase", "ConstructionBase", "DataPipes", "InverseFunctions", "LinearAlgebra", "Reexport"]
-git-tree-sha1 = "dc6f06e908b29d4d3a095573bb591d7391a20b18"
+git-tree-sha1 = "5c6d50ec5b3a3fc2e87d0ce26b934fb87ec4d41b"
 uuid = "33016aad-b69d-45be-9359-82a41f556fd4"
-version = "0.1.101"
+version = "0.1.102"
 
     [deps.AccessorsExtra.extensions]
     ColorTypesExt = "ColorTypes"
@@ -134,9 +134,9 @@ version = "0.2.17"
 
 [[deps.AxisKeysExtra]]
 deps = ["AxisKeys", "DataPipes", "Reexport", "StructArrays"]
-git-tree-sha1 = "bfb0b8d0d66b14f5551808994c470e449fd7b21c"
+git-tree-sha1 = "ee9c9ab67327f3d3c2e3f80d4bb97302d564ac3f"
 uuid = "b7a0d2b7-1990-46dc-b5dd-87820ecd1b09"
-version = "0.1.26"
+version = "0.1.27"
 
     [deps.AxisKeysExtra.extensions]
     ComradeBaseExt = ["ComradeBase", "Unitful"]
@@ -308,13 +308,17 @@ version = "1.16.0"
 
 [[deps.DataManipulation]]
 deps = ["Accessors", "AccessorsExtra", "DataPipes", "Dictionaries", "FlexiGroups", "FlexiMaps", "InverseFunctions", "Reexport", "Skipper", "StructArrays"]
-git-tree-sha1 = "483af7c3ea440a9a0dd3c33ca1cc86661ed28d54"
+git-tree-sha1 = "b0d6ba3ab960ce8344568a80145ff3639c022f5d"
 uuid = "38052440-ad76-4236-8414-61389b2c5143"
-version = "0.1.21"
-weakdeps = ["IntervalSets"]
+version = "0.1.22"
 
     [deps.DataManipulation.extensions]
+    DictArraysExt = "DictArrays"
     IntervalSetsExt = "IntervalSets"
+
+    [deps.DataManipulation.weakdeps]
+    DictArrays = "e9958f2c-b184-4647-9c5a-224a61f6a14b"
+    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
 
 [[deps.DataPipes]]
 git-tree-sha1 = "3fb39158bc35c984cac5edb1ff55daa88a4b5074"
@@ -390,9 +394,9 @@ version = "0.4.28"
 
 [[deps.Distributions]]
 deps = ["AliasTables", "FillArrays", "LinearAlgebra", "PDMats", "Printf", "QuadGK", "Random", "SpecialFunctions", "Statistics", "StatsAPI", "StatsBase", "StatsFuns"]
-git-tree-sha1 = "3bc002af51045ca3b47d2e1787d6ce02e68b943a"
+git-tree-sha1 = "96f76dcd6cc75cf8eb49109123868499d413f526"
 uuid = "31c24e10-a181-5473-b8eb-7969acd0382f"
-version = "0.25.122"
+version = "0.25.126"
 
     [deps.Distributions.extensions]
     DistributionsChainRulesCoreExt = "ChainRulesCore"
@@ -583,19 +587,25 @@ version = "0.3.28"
 
 [[deps.ImGuiThemes]]
 deps = ["Accessors", "CImGui", "Colors", "TOML"]
-path = "/Users/aplavin/.julia/dev/ImGuiThemes"
+git-tree-sha1 = "a2e76c0861ab002b864440b7c1f34cbb9a30e7ed"
+repo-rev = "master"
+repo-url = "https://github.com/JuliaImGui/ImGuiThemes.jl.git"
 uuid = "deadbeef-cafe-face-babe-c0ffeedecade"
 version = "0.1.0"
 
 [[deps.ImPlot]]
 deps = ["CEnum", "CImGui", "CImGuiPack_jll", "ConstructionBase", "DocStringExtensions"]
-path = "/Users/aplavin/.julia/dev/ImPlot"
+git-tree-sha1 = "5448d1ed350038a2b46db3215ba09f1b4c7ef777"
+repo-rev = "main"
+repo-url = "https://github.com/aplavin/ImPlot.jl"
 uuid = "e8efc688-5342-4ad4-b4ba-9025a731b363"
 version = "0.8.0"
 
 [[deps.ImPlotExtra]]
-deps = ["CImGui", "ColorSchemes", "ColorTypes", "FixedPointNumbers", "ImPlot", "IntervalSets"]
-path = "/Users/aplavin/.julia/dev/ImPlotExtra"
+deps = ["CImGui", "ColorSchemes", "ColorTypes", "FixedPointNumbers", "ImPlot", "IntervalSets", "ModernGL"]
+git-tree-sha1 = "cc6716f20704cf99c56ade13a4747cf39ce144c4"
+repo-rev = "master"
+repo-url = "https://github.com/aplavin/ImPlotExtra.jl"
 uuid = "bf2a09a8-fe43-4b24-a47f-d3d0370c11fb"
 version = "0.1.0"
 
@@ -640,9 +650,9 @@ version = "0.1.35"
     ComradeBase = "6d8c423b-a35f-4ef1-850c-862fe21f82c4"
 
 [[deps.IntervalSets]]
-git-tree-sha1 = "d966f85b3b7a8e49d034d27a189e9a4874b4391a"
+git-tree-sha1 = "79d6bd28c8d9bccc2229784f1bd637689b256377"
 uuid = "8197267c-284f-5f27-9208-e0e47529a953"
-version = "0.7.13"
+version = "0.7.14"
 
     [deps.IntervalSets.extensions]
     IntervalSetsRandomExt = "Random"
@@ -756,9 +766,9 @@ uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
 [[deps.LogExpFunctions]]
 deps = ["DocStringExtensions", "IrrationalConstants", "LinearAlgebra"]
-git-tree-sha1 = "13ca9e2586b89836fd20cccf56e57e2b9ae7f38f"
+git-tree-sha1 = "bba2d9aa057d8f126415de240573e86a8f39d2a1"
 uuid = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
-version = "0.3.29"
+version = "1.0.1"
 
     [deps.LogExpFunctions.extensions]
     LogExpFunctionsChainRulesCoreExt = "ChainRulesCore"
@@ -1130,9 +1140,9 @@ version = "0.34.11"
 
 [[deps.StatsFuns]]
 deps = ["HypergeometricFunctions", "IrrationalConstants", "LogExpFunctions", "Reexport", "Rmath", "SpecialFunctions"]
-git-tree-sha1 = "91f091a8716a6bb38417a6e6f274602a19aaa685"
+git-tree-sha1 = "3f4e1d24289cd974e089c617b1472311a2b1feab"
 uuid = "4c63d2b9-4356-54db-8cca-17b64c39e42c"
-version = "1.5.2"
+version = "2.1.0"
 
     [deps.StatsFuns.extensions]
     StatsFunsChainRulesCoreExt = "ChainRulesCore"
@@ -1144,9 +1154,9 @@ version = "1.5.2"
 
 [[deps.StructArrays]]
 deps = ["ConstructionBase", "DataAPI", "Tables"]
-git-tree-sha1 = "a2c37d815bf00575332b7bd0389f771cb7987214"
+git-tree-sha1 = "ad8002667372439f2e3611cfd14097e03fa4bccd"
 uuid = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
-version = "0.7.2"
+version = "0.7.3"
 
     [deps.StructArrays.extensions]
     StructArraysAdaptExt = "Adapt"
@@ -1217,9 +1227,9 @@ uuid = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 
 [[deps.Uncertain]]
 deps = ["Accessors", "LinearAlgebra"]
-git-tree-sha1 = "86bc746f84d08cfa25aa423ed1f551353696822a"
+git-tree-sha1 = "638a4bc54ff64702680476435f7587bbf1e35c0d"
 uuid = "b33f403f-199b-472b-b9d0-1cd2092892d0"
-version = "0.1.15"
+version = "0.1.20"
 
     [deps.Uncertain.extensions]
     FlexiJoinsExt = "FlexiJoins"
@@ -1247,9 +1257,9 @@ uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 
 [[deps.Unitful]]
 deps = ["Dates", "LinearAlgebra", "Random"]
-git-tree-sha1 = "c25751629f5baaa27fef307f96536db62e1d754e"
+git-tree-sha1 = "57e1b2c9de4bd6f40ecb9de4ac1797b81970d008"
 uuid = "1986cc42-f94f-5a68-af5c-568840ba703d"
-version = "1.27.0"
+version = "1.28.0"
 
     [deps.Unitful.extensions]
     ConstructionBaseUnitfulExt = "ConstructionBase"
@@ -1282,7 +1292,7 @@ version = "1.2.2"
 
 [[deps.VLBIData]]
 deps = ["AccessorsExtra", "DataManipulation", "DateFormats", "DispatchDoctor", "EnumX", "InterferometricModels", "IntervalSets", "LinearAlgebra", "PolarizedTypes", "Printf", "Reexport", "SkyCoords", "SpecialFunctions", "StaticArrays", "Statistics", "StructArrays", "StructHelpers", "Uncertain", "Unitful", "UnitfulAngles"]
-path = "../VLBIData"
+git-tree-sha1 = "eff13eb2dec849271df2ac1c9fa331705a9733da"
 uuid = "679fc9cc-3e84-11e9-251b-cbd013bd8115"
 version = "0.5.20"
 
@@ -1298,7 +1308,9 @@ version = "0.5.20"
 
 [[deps.VLBIFiles]]
 deps = ["AccessorsExtra", "AxisKeys", "CSV", "DataManipulation", "DateFormats", "Dates", "DelimitedFiles", "Dictionaries", "FITSIO", "InterferometricModels", "Mmap", "NamedDims", "PrecompileTools", "PyFormattedStrings", "Reexport", "SkyCoords", "StaticArrays", "Statistics", "StructArrays", "Tables", "Uncertain", "Unitful", "UnitfulAngles", "UnitfulAstro", "VLBIData"]
-path = "/Users/aplavin/.julia/dev/VLBIFiles"
+git-tree-sha1 = "68da91464947bb50448f42051ee026f0859164e1"
+repo-rev = "master"
+repo-url = "https://github.com/JuliaAPlavin/VLBIFiles.jl.git"
 uuid = "c1ebf4c8-f9d4-409a-8daf-7009448f4e6e"
 version = "0.4.17"
 
