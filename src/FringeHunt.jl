@@ -46,22 +46,29 @@ function records_to_visarray(recs)
 end
 
 function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
-    scans = @p uvdata_src group_vg((; _.scan_id, ants=antenna_names(_.baseline))) collect
+    # scan-outer so we can prefetch each scan's visibilities once: its rows are one contiguous file span
+    # (~hundreds of MB, fits RAM), so a single sequential readahead replaces the per-baseline random faults.
+    scans = @p uvdata_src group_vg(_.scan_id) collect
     @withprogress name="Fitting fringes" @p scans |>
         enumerate() |>
         flatmap() do (i, scan)
-            recs = value(scan)
-            alldata = records_to_visarray(recs)
-            # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
-            stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
-            res = @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
-                freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
-                data0 = alldata(stokes=stokes)(freq=freqs)
-                data = @set named_axiskeys(data0).freq = freqs
-                (;fabs, value, peakloc, ntrials) = fringefit_single(data; pad_factor=2)
-                (; band, stokes, key(scan)..., uv=mean(recs.uvw),
-                   datetime=(lo=minimum(recs.datetime); hi=maximum(recs.datetime); lo + (hi - lo) ÷ 2),  # scan mid-time
-                   value, peakloc, ntrials)
+            scan_id = key(scan)
+            scan_rows = value(scan)
+            VLBIFiles.prefetch!(scan_rows.visibility)
+            res = @p scan_rows group_vg((; ants=antenna_names(_.baseline))) flatmap() do bl
+                recs = value(bl)
+                alldata = records_to_visarray(recs)
+                # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
+                stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
+                @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
+                    freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
+                    data0 = alldata(stokes=stokes)(freq=freqs)
+                    data = @set named_axiskeys(data0).freq = freqs
+                    (;fabs, value, peakloc, ntrials) = fringefit_single(data; pad_factor=2)
+                    (; band, stokes, scan_id, key(bl)..., uv=mean(recs.uvw),
+                       datetime=(lo=minimum(recs.datetime); hi=maximum(recs.datetime); lo + (hi - lo) ÷ 2),  # scan mid-time
+                       value, peakloc, ntrials)
+                end
             end
             @logprogress i/length(scans)
             res
@@ -422,7 +429,9 @@ function draw_uvsnr!(app::AppState)
             ImPlot.PlotScatter("fringes", xs, ys; spec=ImPlot.ImPlotSpec(Marker=ImPlot.ImPlotMarker_Circle))
         else
             GC.@preserve colors begin
-                spec = ImPlot.ImPlotSpec(Marker=ImPlot.ImPlotMarker_Circle, MarkerFillColors=pointer(colors))
+                # color on the marker EDGE, transparent fill
+                spec = ImPlot.ImPlotSpec(Marker=ImPlot.ImPlotMarker_Circle,
+                    MarkerLineColors=pointer(colors), MarkerFillColor=CImGui.ImVec4(0, 0, 0, 0))
                 ImPlot.PlotScatter("fringes", xs, ys; spec)
             end
         end
