@@ -28,3 +28,21 @@ end
     @test fracs ≈ (1:10) ./ 10
     @test fl.fraction[] ≈ 1.0
 end
+
+@testitem "split_time_segments" begin
+    using Dates: DateTime, Second
+    # StructArrays/Dates accessed without extra test deps; one record table with the given second offsets
+    recs(secs) = FringeHunt.StructArrays.StructArray((; datetime = DateTime(2020) .+ Second.(secs)))
+    split = FringeHunt.split_time_segments
+
+    # a contiguous run on a uniform grid stays one segment
+    @test length(split(recs(0:4:40))) == 1
+    # a gap that is a whole multiple of the step (a dropped sample) stays one segment
+    @test length(split(recs([0, 4, 8, 20, 24, 28]))) == 1     # 8→20 is 12s = 3×4s
+    # a gap offset by a fraction of the step splits into two grids
+    parts = split(recs([0, 4, 8, 14, 18, 22]))                # 8→14 is 6s = 1.5×4s
+    @test length(parts) == 2
+    @test map(length, parts) == [3, 3]
+    # a single record is its own segment
+    @test length(split(recs([0]))) == 1
+end

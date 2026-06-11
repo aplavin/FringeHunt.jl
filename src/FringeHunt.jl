@@ -13,7 +13,7 @@ using ProgressLogging
 using Logging
 using Dates: datetime2unix
 using StructArrays
-using Unitful
+using Unitful 
 using IntervalSets
 using Uncertain
 using AxisKeysExtra
@@ -46,6 +46,21 @@ function records_to_visarray(recs)
     end
 end
 
+# Split a time-sorted record table into maximal contiguous segments that each lie on a single uniform
+# time grid. A gap that is not a whole multiple of the sampling step resumes off-grid and can't be placed
+# on that grid, so it begins a new segment; gaps that are whole multiples stay within a segment. The
+# tolerance separates a real fractional-step offset from timestamp rounding noise.
+const _GRID_TOL = 0.1
+function split_time_segments(recs)
+    length(recs) <= 1 && return [recs]
+    ts = @p recs.datetime map((_ - first(recs.datetime)) |> u"s" |> float)   # time from start
+    d = diff(ts)
+    dt = median(d)                                              # sampling step
+    cuts = findall(g -> abs(g/dt - round(g/dt)) > _GRID_TOL, d)
+    bounds = [0; cuts; length(recs)]
+    [recs[bounds[k]+1 : bounds[k+1]] for k in 1:length(bounds)-1]
+end
+
 function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
     # scan-outer so we can prefetch each scan's visibilities once: its rows are one contiguous file span
     # (~hundreds of MB, fits RAM), so a single sequential readahead replaces the per-baseline random faults.
@@ -57,19 +72,23 @@ function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
             scan_rows = value(scan)
             VLBIFiles.prefetch!(scan_rows.visibility)
             res = @p scan_rows group_vg((; ants=antenna_names(_.baseline))) flatmap() do bl
-                recs = value(bl)
-                alldata = records_to_visarray(recs)
-                # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
-                stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
-                @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
-                    freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
-                    data0 = alldata(stokes=stokes)(freq=freqs)
-                    data = @set named_axiskeys(data0).freq = freqs
-                    (;fabs, value, peakloc, ntrials) = fringefit_single(data; pad_factor=2)
-                    (; band, stokes, scan_id, key(bl)..., uv=mean(recs.uvw),
-                       datetime=(lo=minimum(recs.datetime); hi=maximum(recs.datetime); lo + (hi - lo) ÷ 2),  # scan mid-time
-                       value, peakloc, ntrials)
-                end
+                # records on one baseline may span a time-grid discontinuity; fit each single-grid segment on its own
+                @p split_time_segments(value(bl)) |>
+                    filter(seg -> length(seg) >= 2) |>           # need ≥2 samples to fit
+                    flatmap() do seg
+                        alldata = records_to_visarray(seg)
+                        # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
+                        stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
+                        tspan = first(seg.datetime) .. last(seg.datetime)
+                        @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
+                            freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
+                            data0 = alldata(stokes=stokes)(freq=freqs)
+                            data = @set named_axiskeys(data0).freq = freqs
+                            (;fabs, value, peakloc, ntrials) = fringefit_single(data; pad_factor=2)
+                            (; band, stokes, scan_id, key(bl)..., uv=mean(seg.uvw), tspan,
+                               value, peakloc, ntrials)
+                        end
+                    end
             end
             @logprogress i/length(scans)
             res
@@ -81,6 +100,7 @@ function compute_selected_block(uvdata_src, fringe)
     block = @p uvdata_src |>
         filter(@o _.scan_id == fringe.scan_id) |>            # column-aware: visibility stays lazy
         filter(@o antenna_names(_.baseline) == fringe.ants) |>
+        filter(@o _.datetime in fringe.tspan) |>             # the selected fringe's segment
         records_to_visarray |>
         __(stokes=fringe.stokes) |>
         __(freq=freqs)
@@ -140,8 +160,11 @@ struct FitResult
     points::StructArray
 end
 
+# Midpoint instant of a time interval.
+_midtime(span) = leftendpoint(span) + (rightendpoint(span) - leftendpoint(span) |> u"s") / 2
+
 # Derive the scatter rows from the fitted fringes. `time` is unix seconds (what ImPlot's Time scale
-# expects); the raw `datetime` (scan mid-time) stays on the row.
+# expects), taken at the segment's midpoint.
 function scatter_points(fringefits)
     isempty(fringefits) &&
         return StructArray((; uvdist=Float64[], snr=Float64[], freq=Float64[], time=Float64[]))
@@ -150,7 +173,7 @@ function scatter_points(fringefits)
            uvdist = ustrip(u"km", hypot(f.uv[1], f.uv[2])),   # projected baseline length
            snr    = U.nσ(f.value),
            freq   = ustrip(u"GHz", VLBIFiles.frequency(f.band)),
-           time   = datetime2unix(f.datetime))
+           time   = datetime2unix(_midtime(f.tspan)))
     end)
 end
 
