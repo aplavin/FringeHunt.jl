@@ -3,6 +3,7 @@ module FringeHunt
 using VLBIFiles
 import FITSIO
 using DataManipulation
+using Dictionaries
 using Statistics
 using CImGui
 using CImGui.CSyntax
@@ -197,11 +198,15 @@ function AppState(uvd)
     Threads.@spawn try
         app.wide_table = uvtable_wide(uvd)            # built once; published before `source_table` gates Compute
         wt = app.wide_table
-        srcs = sources(uvd)
-        ids = sort(collect(keys(srcs)); by=sid -> srcs[sid].name)
-        @atomic app.source_table = StructArray(map(ids) do sid
+        source_ids_indata = distinct(wt.source_id)
+        srcs = @p let
+            sources(uvd)
+            getindices(__, source_ids_indata)
+            sort(by=_.name)
+        end
+        @atomic app.source_table = StructArray(map(pairs(srcs)) do (sid, src)
             sub = @p wt filter(@o _.source_id == sid)
-            (; id=sid, name=srcs[sid].name,
+            (; id=sid, name=src.name,
                nscans=length(VLBI.scan_intervals(VLBI.GapBasedScans(30u"s"), sub)),
                nvis=length(sub))
         end)
