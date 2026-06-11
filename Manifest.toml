@@ -602,8 +602,8 @@ uuid = "e8efc688-5342-4ad4-b4ba-9025a731b363"
 version = "0.8.0"
 
 [[deps.ImPlotExtra]]
-deps = ["CImGui", "ColorSchemes", "ColorTypes", "FixedPointNumbers", "ImPlot", "IntervalSets", "ModernGL"]
-git-tree-sha1 = "cc6716f20704cf99c56ade13a4747cf39ce144c4"
+deps = ["CImGui", "ColorSchemes", "ColorTypes", "FixedPointNumbers", "ImPlot", "IntervalSets"]
+git-tree-sha1 = "55b74e7e33abcc8a2014ad3f6ef9490eefcf3985"
 repo-rev = "master"
 repo-url = "https://github.com/aplavin/ImPlotExtra.jl"
 uuid = "bf2a09a8-fe43-4b24-a47f-d3d0370c11fb"

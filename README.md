@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/b4199040-c464-4a89-9eec-5975da2abd8a
    cd FringeHunt.jl
    ```
 
-2. **Install Julia** 💎: Ensure you have Julia installed: 1.10 or 1.11 is recommended
+2. **Install Julia** 💎: Ensure you have Julia 1.10 installed
 
 3. **Initialize the Environment** 🔧: Start Julia with the project environment
    ```bash
@@ -28,20 +28,16 @@ https://github.com/user-attachments/assets/b4199040-c464-4a89-9eec-5975da2abd8a
 
 ## Quick Start 🚀
 
-Load FringeHunt and start exploring your VLBI data:
+Run FringeHunt on a VLBI data file (FITS-IDI / UVFITS), passing the file as the only argument:
 
-```julia
-# Load the package
-julia> using FringeHunt
-
-# Basic Usage - Open a FITS-IDI file
-julia> FringeHunt.interactive("path/to/your/data.fitsidi")
-
-# The interactive window allows you to:
-# - Select a source from the dropdown menu
-# - View fringe SNR vs UV distance for all baselines
-# - Click on individual fringes to inspect the raw data
+```bash
+julia --project -tauto run.jl <fits file>
 ```
+
+In the interactive window you can:
+- Select a source and press **Compute** to fit fringes across all baselines
+- Explore the fringe SNR vs UV distance
+- Click on individual points to inspect the raw data and delay/rate fringe
 
 `FringeHunt` only loads data for a single source into memory at a time, so it can efficiently handle large files with many sources.
 
@@ -49,8 +45,9 @@ The future vision is to integrate `FringeHunt` with `VLBInspect.jl` in some way.
 
 ## Built On 🏗️
 
-FringeHunt.jl is built on top of several powerful Julia packages:
+FringeHunt.jl is built on top of several key packages:
 
 - **[VLBIFiles.jl](https://github.com/JuliaAPlavin/VLBIFiles.jl)** 📁: Reading FITS-IDI visibility files
-- **[Makie.jl](https://github.com/MakieOrg/Makie.jl)** & **[MakieExtra.jl](https://github.com/JuliaAPlavin/MakieExtra.jl)** 📊: Interactive plotting and visualization
+- **[CImGui.jl](https://github.com/Gnimuc/CImGui.jl)** & **[ImPlot.jl](https://github.com/JuliaImGui/ImPlot.jl)** 📊: Interactive GUI and plotting (Dear ImGui + ImPlot)
 - **[DataManipulation.jl](https://github.com/JuliaAPlavin/DataManipulation.jl)** ⚡: Generic data manipulation
+- **[FFTW.jl](https://github.com/JuliaMath/FFTW.jl)** 🌀: Fast Fourier transforms for the fringe search
