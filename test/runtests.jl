@@ -30,9 +30,9 @@ end
 end
 
 @testitem "split_time_segments" begin
-    using Dates: DateTime, Second
-    # StructArrays/Dates accessed without extra test deps; one record table with the given second offsets
-    recs(secs) = FringeHunt.StructArrays.StructArray((; datetime = DateTime(2020) .+ Second.(secs)))
+    # types accessed via FringeHunt (its deps) to avoid extra test deps; times are fed as seconds,
+    # since split_time_segments only uses their differences
+    recs(secs) = FringeHunt.StructArrays.StructArray((; datetime = secs .* FringeHunt.Unitful.u"s"))
     split = FringeHunt.split_time_segments
 
     # a contiguous run on a uniform grid stays one segment
