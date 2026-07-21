@@ -658,6 +658,7 @@ function _run(app::AppState; frames::Union{Int,Nothing}=nothing)
 
     io = CImGui.GetIO()
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | CImGui.ImGuiConfigFlags_DockingEnable
+    io.FontDefault = CImGui.AddFontFromFileTTF(ImGuiThemes.FONTS[(:JuliaMono, :Regular)])
 
     ImGuiThemes.apply_theme!("Solarized Light")
 
