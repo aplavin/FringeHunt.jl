@@ -2,7 +2,7 @@
 
 julia_version = "1.10.11"
 manifest_format = "2.0"
-project_hash = "bceebade84d2b211e585262b38cacf610d0140ca"
+project_hash = "8eef4d254698bafcc92337588eb5b5227bb8b3a2"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -181,6 +181,12 @@ version = "0.4.9"
 [[deps.Base64]]
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 
+[[deps.BitIntegers]]
+deps = ["Random"]
+git-tree-sha1 = "091d591a060e43df1dd35faab3ca284925c48e46"
+uuid = "c3b6d118-76ef-56ca-8cc7-ebb389d030a1"
+version = "0.3.7"
+
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
@@ -333,6 +339,11 @@ weakdeps = ["IntervalSets", "LinearAlgebra", "StaticArrays"]
     ConstructionBaseLinearAlgebraExt = "LinearAlgebra"
     ConstructionBaseStaticArraysExt = "StaticArrays"
 
+[[deps.DBInterface]]
+git-tree-sha1 = "a444404b3f94deaa43ca2a58e18153a82695282b"
+uuid = "a10d1c49-ce27-4219-8d33-6db1a4562965"
+version = "2.6.1"
+
 [[deps.DataAPI]]
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
 uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
@@ -452,6 +463,18 @@ deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
 uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 version = "1.6.0"
 
+[[deps.DuckDB]]
+deps = ["DBInterface", "Dates", "DuckDB_jll", "FixedPointDecimals", "Tables", "UUIDs", "WeakRefStrings"]
+git-tree-sha1 = "656133510fa02a4f70a9d3ce6c1d083318406550"
+uuid = "d2f5444f-75bc-4fdf-ac35-56f514c445e1"
+version = "1.5.2"
+
+[[deps.DuckDB_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "77618c8916e502c9360abecc8a34822f9fc3d6f9"
+uuid = "2cbbab25-fc8b-58cf-88d4-687a02676033"
+version = "1.5.4+0"
+
 [[deps.EnumX]]
 git-tree-sha1 = "c49898e8438c828577f04b92fc9368c388ac783c"
 uuid = "4e289a0a-7415-4d19-859d-a7e5c4648b56"
@@ -516,6 +539,12 @@ weakdeps = ["PDMats", "SparseArrays", "StaticArrays", "Statistics"]
     FillArraysSparseArraysExt = "SparseArrays"
     FillArraysStaticArraysExt = "StaticArrays"
     FillArraysStatisticsExt = "Statistics"
+
+[[deps.FixedPointDecimals]]
+deps = ["BitIntegers", "Parsers"]
+git-tree-sha1 = "41d3a5de0eab320cc04833a373f0fcb3640073d5"
+uuid = "fb4d412d-6eee-574d-9565-ede6634db7b0"
+version = "0.6.5"
 
 [[deps.FixedPointNumbers]]
 deps = ["Random", "Statistics"]
@@ -1013,6 +1042,18 @@ deps = ["PrecompileTools", "Printf"]
 git-tree-sha1 = "4edb7868d6a1c9ef22c8132c4aa1857e56bd4a84"
 uuid = "5f89f4a4-a228-4886-b223-c468a82ed5b9"
 version = "0.1.13"
+
+[[deps.QuackIO]]
+deps = ["DataAPI", "DuckDB", "Tables"]
+git-tree-sha1 = "38c58fc9f61e84b598049bd812de99f470c03517"
+uuid = "7b8617ff-c43a-4c37-a28b-ad5a1791f8ae"
+version = "0.1.5"
+
+    [deps.QuackIO.extensions]
+    SQLCollectionsExt = "SQLCollections"
+
+    [deps.QuackIO.weakdeps]
+    SQLCollections = "3934435e-e6e6-4fea-a5c0-3a716143d619"
 
 [[deps.QuadGK]]
 deps = ["DataStructures", "LinearAlgebra"]

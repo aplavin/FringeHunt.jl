@@ -11,7 +11,8 @@ import GLFW, ModernGL
 import ImPlot, ImGuiThemes, ImPlotExtra
 using ProgressLogging
 using Logging
-using Dates: datetime2unix
+using Dates: datetime2unix, now
+using QuackIO: write_table
 using StructArrays
 using Unitful 
 using IntervalSets
@@ -233,6 +234,31 @@ function scatter_points(fringefits)
     end)
 end
 
+# Flatten to plain, primitive-typed columns — DuckDB has no native Symbol/Unitful/Uncertain/interval support.
+function fringes_export_table(pts::StructArray, source::AbstractString)
+    map(pts) do f
+        (;
+            source,
+            ant1 = string(f.ants[1]),
+            ant2 = string(f.ants[2]),
+            stokes = string(f.stokes),
+            ifs = join((fw.ix for fw in f.band), ","),
+            time = string(_midtime(f.tspan)),
+            uvdist_m = ustrip(u"m", f.uvdist * u"km"),   # re-scaled, not recomputed from f.uv
+            u_m = ustrip(u"m", f.uv[1]),
+            v_m = ustrip(u"m", f.uv[2]),
+            w_m = ustrip(u"m", f.uv[3]),
+            f.snr,
+            freq_Hz = ustrip(u"Hz", f.freq * u"GHz"),    # re-scaled, not recomputed from f.band
+            delay_s = ustrip(u"s", f.peakloc.delay),
+            rate_Hz = ustrip(u"Hz", f.peakloc.rate),
+            amplitude = U.value(f.value),
+            amplitude_sigma = U.uncertainty(f.value),
+            f.ntrials,
+        )
+    end
+end
+
 # All mutable GUI state, owned by the render thread. The compute task only publishes `result` (one
 # atomic reference); `running`/`fraction` are atomic. Everything else is render-thread-only.
 mutable struct AppState
@@ -246,6 +272,7 @@ mutable struct AppState
     x_quantity::Symbol                            # X axis: :uvdist or :time
     color_quantity::Symbol                        # marker color: :freq or :stokes
     chance_exp::Cint                              # display: chance-probability cutoff line at P = 10^chance_exp (-6..0)
+    save_status::Union{Nothing,String}            # last CSV-export result/error, or nothing before the first save
 
     @atomic result::Union{Nothing,FitResult}      # published by the compute task
     shown::Union{Nothing,FitResult}               # result the render thread has initialized for
@@ -270,7 +297,7 @@ mutable struct AppState
 end
 
 function AppState(uvd)
-    app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :perif, :uvdist, :freq, Cint(-3),
+    app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :perif, :uvdist, :freq, Cint(-3), nothing,
                    nothing, nothing, CImGui.ImU32[], Tuple{String,CImGui.ImVec4}[], nothing, 0,
                    trues(length(uvd.freq_windows)), false,
                    Threads.Atomic{Bool}(false), FractionLogger(), nothing,
@@ -300,6 +327,14 @@ end
 
 _selected_ixs(app::AppState) = [fw.ix for (k, fw) in enumerate(app.uvd.freq_windows) if app.selected_ifs[k]]
 _grouping(app::AppState) = app.grouping_mode === :manual ? ManualCombine(_selected_ixs(app)) : PerIF()
+
+# show all points, or just those whose band touches a selected IF; idxs maps back to r.points rows
+function visible_points(app::AppState, r::FitResult)
+    all(app.selected_ifs) && return r.points, eachindex(r.points)
+    sel_ix = Set(_selected_ixs(app))
+    idxs = findall(b -> any(fw -> fw.ix ∈ sel_ix, b), r.points.band)
+    r.points[idxs], idxs
+end
 
 # Kick off the heavy fit on a background thread. The task does ONLY compute and publishes its
 # results under `app.lock`; it never touches any ImGui/ImPlot/GL state (that stays on the render
@@ -542,6 +577,25 @@ end
 
 const _SWATCH_FLAGS = CImGui.ImGuiColorEditFlags_NoTooltip | CImGui.ImGuiColorEditFlags_NoDragDrop
 
+# source actually used for r, not app.sel_source, which can drift after Compute without a re-run
+function save_fringes_csv!(app::AppState, r::FitResult, pts::StructArray)
+    st = @atomic app.source_table
+    sid = r.uvdata_src.source_id[1]
+    source = st.name[findfirst(==(sid), st.id)]
+    tbl = fringes_export_table(pts, source)
+    stem = splitext(basename(app.uvd.path))[1]
+    ts = replace(string(now()), ":" => "-")   # ms precision: a click is at least one frame past the last
+    fname = "$(stem)_fringes_$(ts).csv"
+    try
+        write_table(fname, tbl)
+        app.save_status = "Saved $(length(tbl)) rows to $fname"
+    catch e
+        app.save_status = "Save failed: $(sprint(showerror, e))"
+        @error "fringe CSV export failed" exception=(e, catch_backtrace())
+    end
+    nothing
+end
+
 function draw_uvsnr!(app::AppState)
     CImGui.Begin("UV vs SNR")
     r = app.shown
@@ -550,6 +604,7 @@ function draw_uvsnr!(app::AppState)
         CImGui.End()
         return
     end
+    pts, idxs = visible_points(app, r)
 
     # per-axis selectors on one line: X is uvdist/time, color is frequency/stokes (Y is always SNR)
     newx = radio_group("X axis:", app.x_quantity, X_OPTIONS)
@@ -561,19 +616,19 @@ function draw_uvsnr!(app::AppState)
     CImGui.SetNextItemWidth(200)
     CImGui.SliderInt("##chance", ce, Cint(-6), Cint(0), "chance p: 1e%d")
     app.chance_exp = ce[]
+    CImGui.SameLine(0, 30)
+    isempty(pts) && CImGui.BeginDisabled()
+    CImGui.Button("Save CSV") && save_fringes_csv!(app, r, pts)
+    isempty(pts) && CImGui.EndDisabled()
+    if !isnothing(app.save_status)
+        CImGui.SameLine()
+        CImGui.Text(app.save_status)
+    end
 
     ensure_colors!(app)
 
     xq = app.x_quantity
-    # show all points, or just those whose band touches a selected IF; `idxs` maps back to r.points rows
-    if all(app.selected_ifs)
-        pts, colors, idxs = r.points, app.fr_colors, eachindex(r.points)
-    else
-        sel_ix = Set(_selected_ixs(app))
-        idxs = findall(b -> any(fw -> fw.ix ∈ sel_ix, b), r.points.band)
-        pts = r.points[idxs]
-        colors = isempty(app.fr_colors) ? app.fr_colors : app.fr_colors[idxs]
-    end
+    colors = isempty(app.fr_colors) ? app.fr_colors : app.fr_colors[idxs]
     xs, ys = getproperty(pts, xq), pts.snr
     sp = unsafe_load(CImGui.GetStyle()).ItemSpacing.x
     cbw = 90.0f0                                   # reserve right-pane width for the colorbar / legend

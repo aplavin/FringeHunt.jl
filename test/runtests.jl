@@ -121,3 +121,53 @@ end
     @test fab.peakloc.delay ≈ delay atol=abs(dax[2] - dax[1])   # within one grid cell
     @test fab.peakloc.rate  ≈ rate  atol=abs(rax[2] - rax[1])
 end
+
+@testitem "fringes_export_table" begin
+    using FringeHunt.VLBIFiles, FringeHunt.Unitful, FringeHunt.Uncertain, FringeHunt.IntervalSets
+    using Dates
+    FW = VLBIFiles.FrequencyWindow
+    row = (
+        ants = (:AA, :BB),
+        stokes = :RR,
+        band = [FW(1, 2, 8.000f9u"Hz", 8f6u"Hz", 4, 1, 1f0), FW(1, 5, 8.100f9u"Hz", 8f6u"Hz", 4, 1, 1f0)],
+        tspan = DateTime(2024, 1, 1, 0, 0, 0) .. DateTime(2024, 1, 1, 0, 1, 0),
+        uvdist = 5.0,
+        uv = [100.0u"m", -200.0u"m", 50.0u"m"],
+        snr = 12.3,
+        freq = 8.0,
+        peakloc = (; delay = 40.0u"ns", rate = 3.0u"mHz"),
+        value = 5.0 ±ᵤ 0.5,
+        ntrials = 100,
+    )
+    pts = FringeHunt.StructArrays.StructArray([row])
+    tbl = FringeHunt.fringes_export_table(pts, "3C273")
+
+    @test length(tbl) == 1
+    r = only(tbl)
+    # hardcoded, independent of the ustrip/join/string calls under test
+    @test (r.source, r.ant1, r.ant2, r.stokes, r.ifs) == ("3C273", "AA", "BB", "RR", "2,5")
+    @test r.time == "2024-01-01T00:00:30"
+    @test r.uvdist_m ≈ 5000.0
+    @test (r.u_m, r.v_m, r.w_m) == (100.0, -200.0, 50.0)
+    @test r.snr ≈ 12.3
+    @test r.freq_Hz ≈ 8.0e9
+    @test r.delay_s ≈ 4.0e-8
+    @test r.rate_Hz ≈ 0.003
+    @test (r.amplitude, r.amplitude_sigma) == (5.0, 0.5)
+    @test r.ntrials == 100
+end
+
+@testitem "fringes_export_table writes a readable CSV via QuackIO" begin
+    using FringeHunt.StructArrays
+    tbl = StructArrays.StructArray([(; source = "3C273", ifs = "2,5", snr = 12.3, ntrials = 100)])
+    path = tempname() * ".csv"
+    try
+        FringeHunt.write_table(path, tbl)
+        lines = readlines(path)
+        @test length(lines) == 2
+        @test lines[1] == "source,ifs,snr,ntrials"
+        @test lines[2] == "3C273,\"2,5\",12.3,100"
+    finally
+        rm(path; force=true)
+    end
+end
