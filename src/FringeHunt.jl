@@ -19,9 +19,10 @@ using Uncertain
 using AxisKeysExtra
 using RectiGrids
 using Distributions
-using LinearAlgebra: norm
+using LinearAlgebra: norm, mul!
 using AccessorsExtra
 using FFTW
+using OhMyThreads: tmapreduce, TaskLocalValue
 
 
 function load_source(wide_table, source_id)
@@ -61,38 +62,53 @@ function split_time_segments(recs)
     [recs[bounds[k]+1 : bounds[k+1]] for k in 1:length(bounds)-1]
 end
 
-function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
-    # scan-outer so we can prefetch each scan's visibilities once: its rows are one contiguous file span
-    # (~hundreds of MB, fits RAM), so a single sequential readahead replaces the per-baseline random faults.
-    scans = @p uvdata_src group_vg(_.scan_id) collect
-    @withprogress name="Fitting fringes" @p scans |>
-        enumerate() |>
-        flatmap() do (i, scan)
-            scan_id = key(scan)
-            scan_rows = value(scan)
-            VLBIFiles.prefetch!(scan_rows.visibility)
-            res = @p scan_rows group_vg((; ants=antenna_names(_.baseline))) flatmap() do bl
-                # records on one baseline may span a time-grid discontinuity; fit each single-grid segment on its own
-                @p split_time_segments(value(bl)) |>
-                    filter(seg -> length(seg) >= 2) |>           # need ≥2 samples to fit
-                    flatmap() do seg
-                        alldata = records_to_visarray(seg)
-                        # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
-                        stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
-                        tspan = first(seg.datetime) .. last(seg.datetime)
-                        @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
-                            freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
-                            data0 = alldata(stokes=stokes)(freq=freqs)
-                            data = @set named_axiskeys(data0).freq = freqs
-                            (;fabs, value, peakloc, ntrials) = fringefit_single(data; pad_factor=2)
-                            (; band, stokes, scan_id, key(bl)..., uv=mean(seg.uvw), tspan,
-                               value, peakloc, ntrials)
-                        end
-                    end
+# All fits for one baseline group, using `ws_dict` (a per-task pool of FFT plans + buffers).
+function _process_baseline(bl, uvd, scan_id, fit_crosshands, ws_dict)
+    # records on one baseline may span a time-grid discontinuity; fit each single-grid segment on its own
+    @p split_time_segments(value(bl)) |>
+        filter(seg -> length(seg) >= 2) |>           # need ≥2 samples to fit
+        flatmap() do seg
+            alldata = records_to_visarray(seg)
+            # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
+            stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
+            tspan = first(seg.datetime) .. last(seg.datetime)
+            @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
+                freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
+                data0 = alldata(stokes=stokes)(freq=freqs)
+                data = @set named_axiskeys(data0).freq = freqs
+                (; value, peakloc, ntrials) = fringefit_peak(data, ws_dict; pad_factor=2)
+                (; band, stokes, scan_id, key(bl)..., uv=mean(seg.uvw), tspan,
+                   value, peakloc, ntrials)
             end
-            @logprogress i/length(scans)
-            res
         end
+end
+
+# A scan's baselines in parallel (OhMyThreads); each task owns a workspace pool (`TaskLocalValue`), lock-
+# free bar one-time planning. Order-independent (unordered scatter downstream).
+function _fit_baselines_parallel(bls, uvd, scan_id, fit_crosshands)
+    isempty(bls) && return NamedTuple[]
+    pool = TaskLocalValue{Dict{NTuple{2,Int},FFTWorkspace}}(() -> Dict{NTuple{2,Int},FFTWorkspace}())
+    tmapreduce(vcat, bls) do bl
+        _process_baseline(bl, uvd, scan_id, fit_crosshands, pool[])
+    end
+end
+
+function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
+    # scan-outer: each scan's rows are one contiguous file span, so one readahead replaces per-baseline faults.
+    scans = @p uvdata_src group_vg(_.scan_id) collect
+    isempty(scans) && return NamedTuple[]
+    # overlap I/O with compute: scan i+1's readahead runs on a background task while scan i is fit.
+    prefetch(i) = Threads.@spawn VLBIFiles.prefetch!(value(scans[i]).visibility)
+    pf = Ref(prefetch(1))
+    results = @withprogress name="Fitting fringes" map(enumerate(scans)) do (i, scan)
+        wait(pf[])                                        # scan i's visibilities are in RAM
+        i < length(scans) && (pf[] = prefetch(i + 1))     # kick off scan i+1's readahead
+        bls = @p value(scan) group_vg((; ants=antenna_names(_.baseline))) collect
+        res = _fit_baselines_parallel(bls, uvd, key(scan), fit_crosshands)
+        @logprogress i / length(scans)
+        res
+    end
+    reduce(vcat, results)
 end
 
 function compute_selected_block(uvdata_src, fringe)
@@ -618,6 +634,89 @@ function calculate_timesteps(times::AbstractVector)
 	return (;dt, tns)
 end
 
+# ---------------------------------------------------------------------------
+# Fast batched fringe-fit core (used by compute_fringefits_all)
+# ---------------------------------------------------------------------------
+# Peak-only path, called thousands of times: reuses buffers, skips fftshift/KeyedArray. peakloc/ntrials
+# match `fringefit_single`; SNR differs only by the subsampled noise median.
+
+const _PLAN_LOCK = ReentrantLock()            # FFTW planning is not thread-safe; guard workspace creation
+
+# Noise median from a stride-7 subsample of |FFT|² (exact median was the top cost; uniform floor → ≈1%).
+# 5-smooth sizes are never ÷7, so the stride stays coprime with every row count and covers all delay rows.
+const _MEDIAN_STRIDE = 7
+
+# Reusable per-(padded size) scratch: an FFT plan plus the buffers a single fit touches.
+struct FFTWorkspace{P}
+    plan::P                      # out-of-place complex FFT plan for `inbuf`
+    inbuf::Matrix{ComplexF32}    # zeropad target (padded size)
+    outbuf::Matrix{ComplexF32}   # FFT output (mul! destination, unshifted)
+    submag::Vector{Float32}      # strided subsample of |outbuf|², for the approximate noise median
+end
+
+# 5-smooth padded length ≥ n*factor: FFTW is slow on large prime factors; rounding up only refines the grid.
+_padded_len(n, factor) = nextprod((2, 3, 5), n * factor)
+
+function _get_workspace!(ws_dict, padsize)
+    get!(ws_dict, padsize) do
+        lock(_PLAN_LOCK) do
+            inbuf = zeros(ComplexF32, padsize)
+            # MEASURE (ESTIMATE's plan is ~4× slower here); ~25µs, amortized over thousands of fits. Overwrites inbuf.
+            plan = plan_fft(inbuf; flags=FFTW.MEASURE)
+            submag = Vector{Float32}(undef, cld(prod(padsize), _MEDIAN_STRIDE))
+            FFTWorkspace(plan, inbuf, similar(inbuf), submag)
+        end
+    end
+end
+
+# Fast `findmax(f, out)`: Base's won't SIMD (index-carrying, NaN-aware reduction), ~3× slower. 4 lanes break
+# the loop-carried dependency. Pass `abs2` (skips a sqrt). NB: does not propagate NaN.
+function _findmax(f, out)
+    n = length(out)
+    @inbounds a1 = a2 = a3 = a4 = f(out[1])
+    i1 = i2 = i3 = i4 = 1
+    k = 1
+    @inbounds while k + 3 <= n
+        m1 = f(out[k]);     m1 > a1 && (a1 = m1; i1 = k)
+        m2 = f(out[k + 1]); m2 > a2 && (a2 = m2; i2 = k + 1)
+        m3 = f(out[k + 2]); m3 > a3 && (a3 = m3; i3 = k + 2)
+        m4 = f(out[k + 3]); m4 > a4 && (a4 = m4; i4 = k + 3)
+        k += 4
+    end
+    @inbounds while k <= n; m = f(out[k]); m > a1 && (a1 = m; i1 = k); k += 1 end
+    a2 > a1 && (a1 = a2; i1 = i2); a3 > a1 && (a1 = a3; i1 = i3); a4 > a1 && (a1 = a4; i1 = i4)
+    (a1, CartesianIndices(out)[i1])   # loop stays linear for speed; convert once, matching Base findmax
+end
+
+# One fit: zeropad → FFT → peak + subsampled-median noise. Works in |·|² (√ only on the two outputs).
+function _fringefit_core(data::KeyedArray, ws::FFTWorkspace)
+    @assert dimnames(data) == (:freq, :time)
+    M = AxisKeys.keyless_unname(data)                # raw ComplexF32 matrix (nf, nt)
+    nf, nt = size(M)
+    fill!(ws.inbuf, 0)
+    @inbounds @views ws.inbuf[1:nf, 1:nt] .= M       # zeropad into the reused buffer
+    mul!(ws.outbuf, ws.plan, ws.inbuf)               # unshifted FFT
+    out = ws.outbuf
+    peakabs2, peakidx = _findmax(abs2, out)
+    peakval = sqrt(peakabs2)
+    ws.submag .= abs2.(@view vec(out)[1:_MEDIAN_STRIDE:end])   # strided subsample for the noise median
+    σ = sqrt(median!(ws.submag)) / median(Rayleigh(1))         # median(|z|) / median(Rayleigh(1)); folds to a const
+    Nf, Nt = size(out)
+    i, j = Tuple(peakidx)                            # unshifted argmax → (delay idx, rate idx)
+    Δf = step(AxisKeys.axiskeys(data, :freq))
+    Δt = step(AxisKeys.axiskeys(data, :time))
+    delay = FFTW.fftfreq(Nf, 1 / Δf)[i] |> u"ns"     # AxisKeys' `fft` uses this same FFTW.fftfreq, so they agree
+    rate  = FFTW.fftfreq(Nt, 1 / Δt)[j] |> u"mHz"
+    (; value = peakval ±ᵤ σ, peakloc = (; delay, rate), ntrials = length(out))
+end
+
+# Workspace-pooled peak-only fit used by the batch driver.
+function fringefit_peak(data::KeyedArray, ws_dict; pad_factor::Int)
+    nf, nt = size(data)
+    padsize = (_padded_len(nf, pad_factor), _padded_len(nt, pad_factor))
+    _fringefit_core(data, _get_workspace!(ws_dict, padsize))
+end
+
 function fringefit_single(data::KeyedArray; pad_factor::Int)
 	@assert dimnames(data) == (:freq, :time)
 
@@ -648,15 +747,17 @@ fringe_pfd(r) = r.ntrials * exp(-0.5 * U.nσ(r.value)^2)
 
 
 function zeropad(A::AbstractArray; factor)
-	P = zeros(eltype(A), size(A) .* factor)
+	P = zeros(eltype(A), map(n -> _padded_len(n, factor), size(A)))
 	P[CartesianIndices(A)] .= A
 	return P
 end
 function zeropad(A::KeyedArray; factor)
 	KeyedArray(zeropad(AxisKeys.keyless_unname(A); factor); map(ak -> expand_range(ak; factor), named_axiskeys(A))...)
 end
-expand_range(rng::StepRangeLen; factor::Int) = @set rng.len *= factor
-expand_range(rng::LinRange; factor::Int) = LinRange(first(rng), first(rng) + (last(rng) - first(rng)) * factor, length(rng) * factor)
+# expand a key range to the padded length, keeping its step (so the delay/rate grid matches the batch core)
+expand_range(rng::StepRangeLen; factor::Int) = @set rng.len = _padded_len(rng.len, factor)
+expand_range(rng::LinRange; factor::Int) =
+	(N = _padded_len(length(rng), factor); LinRange(first(rng), first(rng) + (last(rng) - first(rng)) * (N - 1) / (length(rng) - 1), N))
 
 
 
