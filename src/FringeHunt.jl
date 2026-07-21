@@ -32,6 +32,18 @@ function load_source(wide_table, source_id)
         VLBI.add_scan_ids(VLBI.GapBasedScans(30u"s"))
 end
 
+function calculate_timesteps(times::AbstractVector)
+    ts = (times .- first(times)) .|> u"s" .|> float
+    dt = @p ts diff median
+    tns = @p ts enumerate() map() do (i, t)
+        n, Δ = divrem(t, dt, RoundNearest)
+        @assert abs(Δ) < 0.3*dt (dt, t/dt)
+        Int(n)
+    end
+    @assert issorted(tns)
+    return (;dt, tns)
+end
+
 # one (baseline, scan) group's records → (stokes, freq, time) complex visibility on a regular time grid
 function records_to_visarray(recs)
     (;dt, tns) = calculate_timesteps(recs.datetime)
@@ -54,7 +66,7 @@ end
 const _GRID_TOL = 0.1
 function split_time_segments(recs)
     length(recs) <= 1 && return [recs]
-    ts = @p recs.datetime map((_ - first(recs.datetime)) |> u"s" |> float)   # time from start
+    ts = (recs.datetime .- first(recs.datetime)) .|> u"s" .|> float   # time from start
     d = diff(ts)
     dt = median(d)                                              # sampling step
     cuts = findall(g -> abs(g/dt - round(g/dt)) > _GRID_TOL, d)
@@ -95,7 +107,7 @@ end
 
 function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
     # scan-outer: each scan's rows are one contiguous file span, so one readahead replaces per-baseline faults.
-    scans = @p uvdata_src group_vg(_.scan_id) collect
+    scans = @p uvdata_src group_vg(_.scan_id)
     isempty(scans) && return NamedTuple[]
     # overlap I/O with compute: scan i+1's readahead runs on a background task while scan i is fit.
     prefetch(i) = Threads.@spawn VLBIFiles.prefetch!(value(scans[i]).visibility)
@@ -103,7 +115,7 @@ function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
     results = @withprogress name="Fitting fringes" map(enumerate(scans)) do (i, scan)
         wait(pf[])                                        # scan i's visibilities are in RAM
         i < length(scans) && (pf[] = prefetch(i + 1))     # kick off scan i+1's readahead
-        bls = @p value(scan) group_vg((; ants=antenna_names(_.baseline))) collect
+        bls = @p value(scan) group_vg((; ants=antenna_names(_.baseline)))
         res = _fit_baselines_parallel(bls, uvd, key(scan), fit_crosshands)
         @logprogress i / length(scans)
         res
@@ -678,19 +690,6 @@ function _run(app::AppState; frames::Union{Int,Nothing}=nothing)
     end
 end
 
-
-function calculate_timesteps(times::AbstractVector)
-	ts = (times .- first(times)) .|> u"s" .|> float
-	dt = @p ts diff map(abs) median
-	tns = @p ts enumerate() map() do (i, t)
-		n, Δ = divrem(t, dt, RoundNearest)
-		@assert abs(Δ) < 0.3*dt (dt, t/dt)
-		Int(n)
-	end
-	@assert issorted(tns)
-	return (;dt, tns)
-end
-
 # ---------------------------------------------------------------------------
 # Fast batched fringe-fit core (used by compute_fringefits_all)
 # ---------------------------------------------------------------------------
@@ -775,46 +774,46 @@ function fringefit_peak(data::KeyedArray, ws_dict; pad_factor::Int)
 end
 
 function fringefit_single(data::KeyedArray; pad_factor::Int)
-	@assert dimnames(data) == (:freq, :time)
+    @assert dimnames(data) == (:freq, :time)
 
-	fabs = @p let
-		data
-		fft(zeropad(__; factor=pad_factor))  # actual calculation: pad + fft
-		fftshift  # shift zero to be at the center
+    fabs = @p let
+        data
+        fft(zeropad(__; factor=pad_factor))  # actual calculation: pad + fft
+        fftshift  # shift zero to be at the center
 
-		# more familiar dimension names and units:
-		@set dimnames(__) = (:delay, :rate)
-		@modify(d -> d .|> u"ns", __ |> axiskeys(_, :delay))
-		@modify(d -> d .|> u"mHz", __ |> axiskeys(_, :rate))
+        # more familiar dimension names and units:
+        @set dimnames(__) = (:delay, :rate)
+        @modify(d -> d .|> u"ns", __ |> axiskeys(_, :delay))
+        @modify(d -> d .|> u"mHz", __ |> axiskeys(_, :rate))
 
         map(abs)
-	end
+    end
 
-	# calculate the peak value, and noise distribution:
-	med = median(fabs)
-	σ = med / median(Rayleigh(1))
-	ntrials = length(fabs)
-	peakval, peakloc = with_axiskeys(findmax)(fabs)
+    # calculate the peak value, and noise distribution:
+    med = median(fabs)
+    σ = med / median(Rayleigh(1))
+    ntrials = length(fabs)
+    peakval, peakloc = with_axiskeys(findmax)(fabs)
     value = peakval ±ᵤ σ
 
-	return (; fabs, peakloc, value, σ, ntrials)
+    return (; fabs, peakloc, value, σ, ntrials)
 end
 
 fringe_pfd(r) = r.ntrials * exp(-0.5 * U.nσ(r.value)^2)
 
 
 function zeropad(A::AbstractArray; factor)
-	P = zeros(eltype(A), map(n -> _padded_len(n, factor), size(A)))
-	P[CartesianIndices(A)] .= A
-	return P
+    P = zeros(eltype(A), map(n -> _padded_len(n, factor), size(A)))
+    P[CartesianIndices(A)] .= A
+    return P
 end
 function zeropad(A::KeyedArray; factor)
-	KeyedArray(zeropad(AxisKeys.keyless_unname(A); factor); map(ak -> expand_range(ak; factor), named_axiskeys(A))...)
+    KeyedArray(zeropad(AxisKeys.keyless_unname(A); factor); map(ak -> expand_range(ak; factor), named_axiskeys(A))...)
 end
 # expand a key range to the padded length, keeping its step (so the delay/rate grid matches the batch core)
 expand_range(rng::StepRangeLen; factor::Int) = @set rng.len = _padded_len(rng.len, factor)
 expand_range(rng::LinRange; factor::Int) =
-	(N = _padded_len(length(rng), factor); LinRange(first(rng), first(rng) + (last(rng) - first(rng)) * (N - 1) / (length(rng) - 1), N))
+    (N = _padded_len(length(rng), factor); LinRange(first(rng), first(rng) + (last(rng) - first(rng)) * (N - 1) / (length(rng) - 1), N))
 
 
 
