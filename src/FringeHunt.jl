@@ -378,7 +378,7 @@ end
 # scatter to its points; clicking the selected IF again clears the filter.
 function draw_if_table!(app::AppState)
     fws = app.uvd.freq_windows
-    CImGui.BeginTable("##ifs", 3) || return
+    CImGui.BeginTable("##ifs", 3, CImGui.ImGuiTableFlags_SizingFixedFit) || return  # columns hug content, no clipping
     CImGui.TableSetupColumn("IF")
     CImGui.TableSetupColumn("range")
     CImGui.TableSetupColumn("Δ chan")
