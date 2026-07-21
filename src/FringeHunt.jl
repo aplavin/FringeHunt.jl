@@ -179,6 +179,12 @@ end
 # Midpoint instant of a time interval.
 _midtime(span) = leftendpoint(span) + (rightendpoint(span) - leftendpoint(span) |> u"s") / 2
 
+# A frequency (any Hz-convertible Unitful quantity) as text, auto-scaled to kHz/MHz/GHz.
+function format_freq(f)
+    u = abs(f) ≥ 1u"GHz" ? u"GHz" : abs(f) ≥ 1u"MHz" ? u"MHz" : abs(f) ≥ 1u"kHz" ? u"kHz" : u"Hz"
+    string(round(ustrip(u, f); sigdigits=5), " ", u)
+end
+
 # Derive the scatter rows from the fitted fringes. `time` is unix seconds (what ImPlot's Time scale
 # expects), taken at the segment's midpoint.
 function scatter_points(fringefits)
@@ -212,6 +218,7 @@ mutable struct AppState
     color_legend::Vector{Tuple{String,CImGui.ImVec4}}   # discrete stokes legend entries (empty for :freq)
     color_key::Any                                # (result, color_quantity) the marker colors were built for
     selected::Int                                 # row index into shown.points, or 0 if none
+    if_filter::Int                                # restrict the scatter to this IF (fw.ix); 0 shows all
     refit_scatter::Bool                           # ask ImPlot to refit the scatter axes next frame
 
     running::Threads.Atomic{Bool}
@@ -229,7 +236,7 @@ end
 
 function AppState(uvd)
     app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :uvdist, :freq, Cint(-3),
-                   nothing, nothing, CImGui.ImU32[], Tuple{String,CImGui.ImVec4}[], nothing, 0, false,
+                   nothing, nothing, CImGui.ImU32[], Tuple{String,CImGui.ImVec4}[], nothing, 0, 0, false,
                    Threads.Atomic{Bool}(false), FractionLogger(), nothing,
                    nothing, nothing, nothing, nothing, nothing, false)
     # populate the source table on a background thread (one lazy uvtable_wide + per-source scan/vis
@@ -366,6 +373,36 @@ function _heatmap_constraints(xint, yint, data)
     ImPlot.SetupAxisLimitsConstraints(ImPlot.ImAxis_Y1, by...)
 end
 
+# One selectable row per IF (number, channel-center range, channel spacing), with a dim static gap row
+# between consecutive IFs (nearest-edge separation, negative = overlap). Selecting an IF restricts the
+# scatter to its points; clicking the selected IF again clears the filter.
+function draw_if_table!(app::AppState)
+    fws = app.uvd.freq_windows
+    CImGui.BeginTable("##ifs", 3) || return
+    CImGui.TableSetupColumn("IF")
+    CImGui.TableSetupColumn("range")
+    CImGui.TableSetupColumn("Δ chan")
+    CImGui.TableHeadersRow()
+    for (k, fw) in enumerate(fws)
+        lo, hi = extrema(VLBIFiles.frequencies(fw))
+        CImGui.TableNextRow()
+        CImGui.TableNextColumn()
+        sel = app.if_filter == fw.ix
+        CImGui.Selectable("$(fw.ix)##if", sel, CImGui.ImGuiSelectableFlags_SpanAllColumns) &&
+            (app.if_filter = sel ? 0 : fw.ix)                # toggle off when re-clicking the selected IF
+        CImGui.TableNextColumn(); CImGui.Text("$(format_freq(lo)) – $(format_freq(hi))")
+        CImGui.TableNextColumn(); CImGui.Text(format_freq(fw.width / fw.nchan))
+        if k < length(fws)
+            lb, hb = extrema(VLBIFiles.frequencies(fws[k+1]))
+            gap = max(lo, lb) - min(hi, hb)                  # nearest-edge separation, sideband-agnostic
+            CImGui.TableNextRow()
+            CImGui.TableNextColumn(); CImGui.TableNextColumn()
+            CImGui.TextColored(CImGui.ImVec4(0.5, 0.5, 0.5, 1), "gap $(format_freq(gap))")
+        end
+    end
+    CImGui.EndTable()
+end
+
 function draw_controls!(app::AppState)
     CImGui.Begin("Controls")
     st = @atomic app.source_table
@@ -382,6 +419,10 @@ function draw_controls!(app::AppState)
         end
         CImGui.EndTable()
     end
+
+    CImGui.SeparatorText("Frequency bands (IFs)")
+    draw_if_table!(app)
+    CImGui.Separator()
 
     pf = Ref(app.pad_factor)
     CImGui.SliderInt("", pf, Cint(1), Cint(10), "FFT oversampling: %d×")
@@ -455,8 +496,15 @@ function draw_uvsnr!(app::AppState)
     ensure_colors!(app)
 
     xq = app.x_quantity
-    xs = getproperty(r.points, xq)
-    ys = r.points.snr
+    # show all points, or just the selected IF's — subset the one points table; `idxs` maps back to r.points rows
+    if app.if_filter == 0
+        pts, colors, idxs = r.points, app.fr_colors, eachindex(r.points)
+    else
+        idxs = findall(b -> b.ix == app.if_filter, r.points.band)
+        pts = r.points[idxs]
+        colors = isempty(app.fr_colors) ? app.fr_colors : app.fr_colors[idxs]
+    end
+    xs, ys = getproperty(pts, xq), pts.snr
     sp = unsafe_load(CImGui.GetStyle()).ItemSpacing.x
     cbw = 90.0f0                                   # reserve right-pane width for the colorbar / legend
     avail = CImGui.GetContentRegionAvail()
@@ -474,7 +522,6 @@ function draw_uvsnr!(app::AppState)
             _scatter_axis_constraint(ImPlot.ImAxis_X1, xs)
             _scatter_axis_constraint(ImPlot.ImAxis_Y1, ys)
         end
-        colors = app.fr_colors
         if isempty(colors)
             ImPlot.PlotScatter("fringes", xs, ys; spec=ImPlot.ImPlotSpec(Marker=ImPlot.ImPlotMarker_Circle))
         else
@@ -487,7 +534,8 @@ function draw_uvsnr!(app::AppState)
         end
         # highlight the selected fringe with a larger distinct marker
         if app.selected != 0
-            ImPlot.PlotScatter("selected", [xs[app.selected]], [ys[app.selected]];
+            f = r.points[app.selected]
+            ImPlot.PlotScatter("selected", [getproperty(f, xq)], [f.snr];
                 spec=ImPlot.ImPlotSpec(Marker=ImPlot.ImPlotMarker_Circle, MarkerSize=9,
                     MarkerFillColor=CImGui.ImVec4(1, 0, 0, 0.0), MarkerLineColor=CImGui.ImVec4(1, 0, 0, 1)))
         end
@@ -495,10 +543,11 @@ function draw_uvsnr!(app::AppState)
         if ImPlot.IsPlotHovered() && CImGui.IsMouseClicked(0) && !isempty(xs)
             mp = ImPlot.GetPlotMousePos()
             mpx = ImPlot.PlotToPixels(mp.x, mp.y)
-            app.selected = argmin(eachindex(xs)) do i
+            best = argmin(eachindex(xs)) do i
                 px = ImPlot.PlotToPixels(xs[i], ys[i])
                 (px.x - mpx.x)^2 + (px.y - mpx.y)^2
             end
+            app.selected = idxs[best]
         end
         # chance-probability cutoff: SNR s where N·exp(-½s²) = P (N = # cells), as a horizontal line + axis tag
         if !isempty(ys)
