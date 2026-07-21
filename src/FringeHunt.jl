@@ -403,9 +403,8 @@ function draw_if_table!(app::AppState)
     CImGui.EndTable()
 end
 
-function draw_controls!(app::AppState)
-    CImGui.Begin("Controls")
-    st = @atomic app.source_table
+# One radio-button row per source (name + scan/vis counts); a placeholder until the table has loaded.
+function draw_source_table!(app::AppState, st)
     if isnothing(st)
         CImGui.Text("Loading sources...")
     elseif CImGui.BeginTable("##sources", 2)
@@ -419,11 +418,14 @@ function draw_controls!(app::AppState)
         end
         CImGui.EndTable()
     end
+end
 
-    CImGui.SeparatorText("Frequency bands (IFs)")
-    draw_if_table!(app)
-    CImGui.Separator()
+function draw_controls!(app::AppState)
+    CImGui.Begin("Controls")
+    st = @atomic app.source_table
+    running = app.running[]
 
+    CImGui.SeparatorText("Controls")
     pf = Ref(app.pad_factor)
     CImGui.SliderInt("", pf, Cint(1), Cint(10), "FFT oversampling: %d×")
     app.pad_factor = pf[]
@@ -432,7 +434,6 @@ function draw_controls!(app::AppState)
     CImGui.Checkbox("Fit cross-hands (RL/LR)", ch)
     app.fit_crosshands = ch[]
 
-    running = app.running[]
     busy = running || isnothing(st)               # can't compute until sources are loaded
     busy && CImGui.BeginDisabled()
     CImGui.Button("Compute") && start_compute!(app)
@@ -450,6 +451,12 @@ function draw_controls!(app::AppState)
                                ", UV = ", round(f.uvdist; digits=0), " km"))
         end
     end
+
+    CImGui.SeparatorText("Frequency bands (IFs)")
+    draw_if_table!(app)
+
+    CImGui.SeparatorText("Sources")
+    draw_source_table!(app, st)
     CImGui.End()
 end
 
