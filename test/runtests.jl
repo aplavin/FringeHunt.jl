@@ -83,3 +83,41 @@ end
     end
     @test pad(459, 2) == 960                          # the motivating case: 918 (=2·3³·17) → 960
 end
+
+@testitem "IF grouping: band_groups, combined_grid, band_contiguous" begin
+    using FringeHunt.VLBIFiles, FringeHunt.Unitful
+    FW = VLBIFiles.FrequencyWindow
+    a = FW(1, 1, 8.000f9u"Hz", 8f6u"Hz", 4, 1, 1f0)   # 4 channels, 2 MHz step
+    b = FW(1, 2, 8.008f9u"Hz", 8f6u"Hz", 4, 1, 1f0)   # contiguous with a
+    c = FW(1, 3, 8.030f9u"Hz", 8f6u"Hz", 4, 1, 1f0)   # gap after b
+    fws = [a, b, c]
+
+    @test FringeHunt.band_groups(FringeHunt.PerIF(), fws) == [[a], [b], [c]]
+    @test FringeHunt.band_groups(FringeHunt.ManualCombine([2, 1]), fws) == [[a, b]]   # frequency-sorted
+
+    g = FringeHunt.combined_grid([a, b])
+    @test g isa StepRangeLen
+    @test g ≈ vcat(VLBIFiles.frequencies(a), VLBIFiles.frequencies(b))               # exact concatenation
+
+    @test FringeHunt.band_contiguous([a, b])
+    @test !FringeHunt.band_contiguous([a, c])
+    @test FringeHunt.band_contiguous([a])
+end
+
+@testitem "combined-grid fit recovers the injected delay/rate" begin
+    using FringeHunt.VLBIFiles, FringeHunt.AxisKeys, FringeHunt.Unitful
+    FW = VLBIFiles.FrequencyWindow
+    # two contiguous IFs → one 16-channel, 32 MHz band
+    a = FW(1, 1, 8.000f9u"Hz", 16f6u"Hz", 8, 1, 1f0)
+    b = FW(1, 2, 8.016f9u"Hz", 16f6u"Hz", 8, 1, 1f0)
+    freqs = FringeHunt.combined_grid([a, b])
+    times = range(0.0u"s", step=1.0u"s", length=120)
+    delay, rate = 40.0u"ns", 3.0u"mHz"
+    fringe = [cis(2π * NoUnits(f * delay + t * rate)) for f in freqs, t in times]
+    d = KeyedArray(ComplexF32.(fringe); freq=freqs, time=times)
+
+    fab = FringeHunt.fringefit_single(d; pad_factor=8)
+    dax, rax = axiskeys(fab.fabs, :delay), axiskeys(fab.fabs, :rate)
+    @test fab.peakloc.delay ≈ delay atol=abs(dax[2] - dax[1])   # within one grid cell
+    @test fab.peakloc.rate  ≈ rate  atol=abs(rax[2] - rax[1])
+end

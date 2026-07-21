@@ -74,8 +74,29 @@ function split_time_segments(recs)
     [recs[bounds[k]+1 : bounds[k+1]] for k in 1:length(bounds)-1]
 end
 
+# A fitted "band" is a `Vector{FrequencyWindow}`; `band_groups` partitions the IFs into them. Dispatch
+# on the strategy is the seam for future combination modes.
+struct PerIF end
+struct ManualCombine
+    ixs::Vector{Int}
+end
+band_groups(::PerIF, fws) = [[fw] for fw in fws]
+band_groups(m::ManualCombine, fws) = [sort(filter(fw -> fw.ix ∈ m.ixs, fws))]
+
+# StepRangeLen the band is fitted on (see VLBIFiles.combine_windows for the non-contiguous packing).
+combined_grid(band) = VLBIFiles.frequencies(VLBIFiles.combine_windows(band))
+
+# whether the band's real channels stay on the uniform grid it's fitted on; if not, delay/rate are
+# physically meaningless — a caveat, not an error
+function band_contiguous(band)
+    length(band) <= 1 && return true
+    real = VLBIFiles.frequencies(band)
+    grid = combined_grid(band)
+    maximum(abs.(real .- grid)) < abs(step(grid)) / 2
+end
+
 # All fits for one baseline group, using `ws_dict` (a per-task pool of FFT plans + buffers).
-function _process_baseline(bl, uvd, scan_id, fit_crosshands, ws_dict)
+function _process_baseline(bl, uvd, scan_id, fit_crosshands, groups, ws_dict)
     # records on one baseline may span a time-grid discontinuity; fit each single-grid segment on its own
     @p split_time_segments(value(bl)) |>
         filter(seg -> length(seg) >= 2) |>           # need ≥2 samples to fit
@@ -84,10 +105,10 @@ function _process_baseline(bl, uvd, scan_id, fit_crosshands, ws_dict)
             # by default fit only parallel hands (RR/LL); the GUI's "Fit cross-hands" toggle adds RL/LR
             stokeslist = fit_crosshands ? axiskeys(alldata, :stokes) : filter(VLBI.is_parallel_hands, axiskeys(alldata, :stokes))
             tspan = first(seg.datetime) .. last(seg.datetime)
-            @p grid(; band=uvd.freq_windows, stokes=stokeslist) vec filtermap() do (;band, stokes)
-                freqs = VLBIFiles.frequencies(band)  # per-IF channel frequencies (a StepRangeLen, needed by zeropad)
-                data0 = alldata(stokes=stokes)(freq=freqs)
-                data = @set named_axiskeys(data0).freq = freqs
+            @p grid(; band=groups, stokes=stokeslist) vec filtermap() do (;band, stokes)
+                real = VLBIFiles.frequencies(band)   # real channels to slice by; relabelled to the fit grid below
+                data0 = alldata(stokes=stokes)(freq=real)
+                data = @set named_axiskeys(data0).freq = combined_grid(band)
                 (; value, peakloc, ntrials) = fringefit_peak(data, ws_dict; pad_factor=2)
                 (; band, stokes, scan_id, key(bl)..., uv=mean(seg.uvw), tspan,
                    value, peakloc, ntrials)
@@ -97,15 +118,16 @@ end
 
 # A scan's baselines in parallel (OhMyThreads); each task owns a workspace pool (`TaskLocalValue`), lock-
 # free bar one-time planning. Order-independent (unordered scatter downstream).
-function _fit_baselines_parallel(bls, uvd, scan_id, fit_crosshands)
+function _fit_baselines_parallel(bls, uvd, scan_id, fit_crosshands, groups)
     isempty(bls) && return NamedTuple[]
     pool = TaskLocalValue{Dict{NTuple{2,Int},FFTWorkspace}}(() -> Dict{NTuple{2,Int},FFTWorkspace}())
     tmapreduce(vcat, bls) do bl
-        _process_baseline(bl, uvd, scan_id, fit_crosshands, pool[])
+        _process_baseline(bl, uvd, scan_id, fit_crosshands, groups, pool[])
     end
 end
 
-function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
+function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false, grouping=PerIF())
+    groups = band_groups(grouping, uvd.freq_windows)   # IF→band partition, same for every scan/baseline
     # scan-outer: each scan's rows are one contiguous file span, so one readahead replaces per-baseline faults.
     scans = @p uvdata_src group_vg(_.scan_id)
     isempty(scans) && return NamedTuple[]
@@ -116,7 +138,7 @@ function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
         wait(pf[])                                        # scan i's visibilities are in RAM
         i < length(scans) && (pf[] = prefetch(i + 1))     # kick off scan i+1's readahead
         bls = @p value(scan) group_vg((; ants=antenna_names(_.baseline)))
-        res = _fit_baselines_parallel(bls, uvd, key(scan), fit_crosshands)
+        res = _fit_baselines_parallel(bls, uvd, key(scan), fit_crosshands, groups)
         @logprogress i / length(scans)
         res
     end
@@ -124,15 +146,15 @@ function compute_fringefits_all(uvd, uvdata_src; fit_crosshands=false)
 end
 
 function compute_selected_block(uvdata_src, fringe)
-    freqs = VLBIFiles.frequencies(fringe.band)
+    real = VLBIFiles.frequencies(fringe.band)               # actual channels of the band, for slicing
     block = @p uvdata_src |>
         filter(@o _.scan_id == fringe.scan_id) |>            # column-aware: visibility stays lazy
         filter(@o antenna_names(_.baseline) == fringe.ants) |>
         filter(@o _.datetime in fringe.tspan) |>             # the selected fringe's segment
         records_to_visarray |>
         __(stokes=fringe.stokes) |>
-        __(freq=freqs)
-    @set named_axiskeys(block).freq = freqs
+        __(freq=real)
+    @set named_axiskeys(block).freq = combined_grid(fringe.band)   # uniform grid, matching the fit
 end
 
 # Captures ProgressLogging fractions (0..1) into an atomic the GUI polls each frame.
@@ -206,7 +228,7 @@ function scatter_points(fringefits)
         (; f...,
            uvdist = ustrip(u"km", hypot(f.uv[1], f.uv[2])),   # projected baseline length
            snr    = U.nσ(f.value),
-           freq   = ustrip(u"GHz", VLBIFiles.frequency(f.band)),
+           freq   = ustrip(u"GHz", VLBIFiles.frequency(VLBIFiles.combine_windows(f.band), :average)),
            time   = datetime2unix(_midtime(f.tspan)))
     end)
 end
@@ -220,6 +242,7 @@ mutable struct AppState
     sel_source::Cint                              # 0-based row index into source_table
     pad_factor::Cint                              # FFT oversampling slider (1..10)
     fit_crosshands::Bool                          # compute setting: also fit RL/LR (applies on next Compute)
+    grouping_mode::Symbol                         # compute setting: :perif (each IF) or :manual (combine selected IFs)
     x_quantity::Symbol                            # X axis: :uvdist or :time
     color_quantity::Symbol                        # marker color: :freq or :stokes
     chance_exp::Cint                              # display: chance-probability cutoff line at P = 10^chance_exp (-6..0)
@@ -230,7 +253,7 @@ mutable struct AppState
     color_legend::Vector{Tuple{String,CImGui.ImVec4}}   # discrete stokes legend entries (empty for :freq)
     color_key::Any                                # (result, color_quantity) the marker colors were built for
     selected::Int                                 # row index into shown.points, or 0 if none
-    if_filter::Int                                # restrict the scatter to this IF (fw.ix); 0 shows all
+    selected_ifs::Vector{Bool}                    # per-IF mask (aligned to freq_windows): scatter filter + manual-combine set
     refit_scatter::Bool                           # ask ImPlot to refit the scatter axes next frame
 
     running::Threads.Atomic{Bool}
@@ -247,8 +270,9 @@ mutable struct AppState
 end
 
 function AppState(uvd)
-    app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :uvdist, :freq, Cint(-3),
-                   nothing, nothing, CImGui.ImU32[], Tuple{String,CImGui.ImVec4}[], nothing, 0, 0, false,
+    app = AppState(uvd, nothing, nothing, Cint(0), Cint(4), false, :perif, :uvdist, :freq, Cint(-3),
+                   nothing, nothing, CImGui.ImU32[], Tuple{String,CImGui.ImVec4}[], nothing, 0,
+                   trues(length(uvd.freq_windows)), false,
                    Threads.Atomic{Bool}(false), FractionLogger(), nothing,
                    nothing, nothing, nothing, nothing, nothing, false)
     # populate the source table on a background thread (one lazy uvtable_wide + per-source scan/vis
@@ -274,6 +298,9 @@ function AppState(uvd)
     app
 end
 
+_selected_ixs(app::AppState) = [fw.ix for (k, fw) in enumerate(app.uvd.freq_windows) if app.selected_ifs[k]]
+_grouping(app::AppState) = app.grouping_mode === :manual ? ManualCombine(_selected_ixs(app)) : PerIF()
+
 # Kick off the heavy fit on a background thread. The task does ONLY compute and publishes its
 # results under `app.lock`; it never touches any ImGui/ImPlot/GL state (that stays on the render
 # thread). The render loop polls `app.running` / `app.fl.fraction` each frame for the progress bar.
@@ -283,13 +310,14 @@ function start_compute!(app::AppState)
     isnothing(st) && return                       # sources not loaded yet
     source_id = st.id[app.sel_source + 1]
     wt = app.wide_table                           # cached table, published before `source_table` (read after the gate)
+    grouping = _grouping(app)                      # snapshot the IF grouping at launch (render-thread state)
     app.fl.fraction[] = 0.0
     app.running[] = true
     app.task = Threads.@spawn begin
         try
             src, ffs = Logging.with_logger(app.fl) do
                 s = load_source(wt, source_id)
-                (s, compute_fringefits_all(app.uvd, s; fit_crosshands=app.fit_crosshands))
+                (s, compute_fringefits_all(app.uvd, s; fit_crosshands=app.fit_crosshands, grouping))
             end
             # pure DATA only — NO ImPlot/GL calls here. Per-fringe marker colors need the live ImPlot
             # context (ImPlot.SampleColormap), so they are built on the render thread (see ensure_colors!).
@@ -385,12 +413,15 @@ function _heatmap_constraints(xint, yint, data)
     ImPlot.SetupAxisLimitsConstraints(ImPlot.ImAxis_Y1, by...)
 end
 
-# One selectable row per IF (number, channel-center range, channel spacing), with a dim static gap row
-# between consecutive IFs (nearest-edge separation, negative = overlap). Selecting an IF restricts the
-# scatter to its points; clicking the selected IF again clears the filter.
+# Per-IF rows (checkbox, number, channel-center range, channel spacing) plus a gap row between IFs. The
+# `selected_ifs` mask both filters the scatter and defines the manual-combine band. Checkbox toggles one
+# IF; clicking the number focuses it (or resets to all if already on).
 function draw_if_table!(app::AppState)
     fws = app.uvd.freq_windows
-    CImGui.BeginTable("##ifs", 3, CImGui.ImGuiTableFlags_SizingFixedFit) || return  # columns hug content, no clipping
+    manual = app.grouping_mode === :manual
+    selpos = findall(app.selected_ifs)
+    CImGui.BeginTable("##ifs", 4, CImGui.ImGuiTableFlags_SizingFixedFit) || return  # columns hug content, no clipping
+    CImGui.TableSetupColumn("##sel")
     CImGui.TableSetupColumn("IF")
     CImGui.TableSetupColumn("range")
     CImGui.TableSetupColumn("Δ chan")
@@ -399,17 +430,25 @@ function draw_if_table!(app::AppState)
         lo, hi = extrema(VLBIFiles.frequencies(fw))
         CImGui.TableNextRow()
         CImGui.TableNextColumn()
-        sel = app.if_filter == fw.ix
-        CImGui.Selectable("$(fw.ix)##if", sel, CImGui.ImGuiSelectableFlags_SpanAllColumns) &&
-            (app.if_filter = sel ? 0 : fw.ix)                # toggle off when re-clicking the selected IF
+        cb = Ref(app.selected_ifs[k])
+        CImGui.Checkbox("##ifsel$(fw.ix)", cb)
+        app.selected_ifs[k] = cb[]
+        CImGui.TableNextColumn()
+        if CImGui.Selectable("$(fw.ix)##if", app.selected_ifs[k])
+            app.selected_ifs[k] ? fill!(app.selected_ifs, true) :        # focused IF was on → back to all
+                (fill!(app.selected_ifs, false); app.selected_ifs[k] = true)   # else focus only this one
+        end
         CImGui.TableNextColumn(); CImGui.Text("$(format_freq(lo)) – $(format_freq(hi))")
         CImGui.TableNextColumn(); CImGui.Text(format_freq(fw.width / fw.nchan))
         if k < length(fws)
             lb, hb = extrema(VLBIFiles.frequencies(fws[k+1]))
             gap = max(lo, lb) - min(hi, hb)                  # nearest-edge separation, sideband-agnostic
+            spanned = manual && !isempty(selpos) && first(selpos) <= k && last(selpos) >= k + 1
+            col = spanned && !band_contiguous([fw, fws[k+1]]) ?
+                CImGui.ImVec4(0.9, 0.5, 0.2, 1) : CImGui.ImVec4(0.5, 0.5, 0.5, 1)
             CImGui.TableNextRow()
-            CImGui.TableNextColumn(); CImGui.TableNextColumn()
-            CImGui.TextColored(CImGui.ImVec4(0.5, 0.5, 0.5, 1), "gap $(format_freq(gap))")
+            CImGui.TableNextColumn(); CImGui.TableNextColumn(); CImGui.TableNextColumn()
+            CImGui.TextColored(col, "gap $(format_freq(gap))")
         end
     end
     CImGui.EndTable()
@@ -446,7 +485,11 @@ function draw_controls!(app::AppState)
     CImGui.Checkbox("Fit cross-hands (RL/LR)", ch)
     app.fit_crosshands = ch[]
 
-    busy = running || isnothing(st)               # can't compute until sources are loaded
+    # per-IF (one fringe per IF) vs manual (combine the checked IFs into one band); applies on next Compute
+    app.grouping_mode = radio_group("IF combine:", app.grouping_mode, ((:perif, "per-IF"), (:manual, "selected")))
+
+    manual_empty = app.grouping_mode === :manual && !any(app.selected_ifs)
+    busy = running || isnothing(st) || manual_empty   # can't compute until sources load / with nothing selected
     busy && CImGui.BeginDisabled()
     CImGui.Button("Compute") && start_compute!(app)
     busy && CImGui.EndDisabled()
@@ -458,7 +501,8 @@ function draw_controls!(app::AppState)
         CImGui.Text("$(length(r.points)) fringes fitted")
         if app.selected != 0
             f = r.points[app.selected]
-            CImGui.Text("Selected: $(f.ants[1])-$(f.ants[2]) $(f.stokes) scan $(f.scan_id)")
+            ifs = join((fw.ix for fw in f.band), ",")
+            CImGui.Text("Selected: $(f.ants[1])-$(f.ants[2]) $(f.stokes) scan $(f.scan_id), IF $ifs")
             CImGui.Text(string("SNR = ", round(f.snr; digits=1),
                                ", UV = ", round(f.uvdist; digits=0), " km"))
         end
@@ -466,6 +510,12 @@ function draw_controls!(app::AppState)
 
     CImGui.SeparatorText("Frequency bands (IFs)")
     draw_if_table!(app)
+    if app.grouping_mode === :manual
+        band = sort(app.uvd.freq_windows[app.selected_ifs])
+        isempty(band) ? CImGui.TextColored(CImGui.ImVec4(0.9, 0.5, 0.2, 1), "select ≥1 IF to combine") :
+        band_contiguous(band) || CImGui.TextColored(CImGui.ImVec4(0.9, 0.5, 0.2, 1),
+            "combining $(length(band)) non-contiguous IFs — treated as one uniform grid")
+    end
 
     CImGui.SeparatorText("Sources")
     draw_source_table!(app, st)
@@ -515,11 +565,12 @@ function draw_uvsnr!(app::AppState)
     ensure_colors!(app)
 
     xq = app.x_quantity
-    # show all points, or just the selected IF's — subset the one points table; `idxs` maps back to r.points rows
-    if app.if_filter == 0
+    # show all points, or just those whose band touches a selected IF; `idxs` maps back to r.points rows
+    if all(app.selected_ifs)
         pts, colors, idxs = r.points, app.fr_colors, eachindex(r.points)
     else
-        idxs = findall(b -> b.ix == app.if_filter, r.points.band)
+        sel_ix = Set(_selected_ixs(app))
+        idxs = findall(b -> any(fw -> fw.ix ∈ sel_ix, b), r.points.band)
         pts = r.points[idxs]
         colors = isempty(app.fr_colors) ? app.fr_colors : app.fr_colors[idxs]
     end
