@@ -14,7 +14,8 @@ using Logging
 using Dates: datetime2unix, now
 using QuackIO: write_table
 using StructArrays
-using Unitful 
+using Unitful
+using PyFormattedStrings
 using IntervalSets
 using Uncertain
 using AxisKeysExtra
@@ -215,9 +216,9 @@ end
 _midtime(span) = leftendpoint(span) + (rightendpoint(span) - leftendpoint(span) |> u"s") / 2
 
 # A frequency (any Hz-convertible Unitful quantity) as text, auto-scaled to kHz/MHz/GHz.
-function format_freq(f)
-    u = abs(f) ≥ 1u"GHz" ? u"GHz" : abs(f) ≥ 1u"MHz" ? u"MHz" : abs(f) ≥ 1u"kHz" ? u"kHz" : u"Hz"
-    string(round(ustrip(u, f); sigdigits=5), " ", u)
+function format_freq(x)
+    u = abs(x) ≥ 1u"GHz" ? u"GHz" : abs(x) ≥ 1u"MHz" ? u"MHz" : abs(x) ≥ 1u"kHz" ? u"kHz" : u"Hz"
+    f"{uconvert(u, x):.5g}"
 end
 
 # Derive the scatter rows from the fitted fringes. `time` is unix seconds (what ImPlot's Time scale
