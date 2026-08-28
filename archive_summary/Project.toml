@@ -1,0 +1,10 @@
+[deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+DateFormats = "44557152-fe0a-4de1-8405-416d90313ce6"
+VirtualObservatory = "d7ce213e-d3b9-4ed1-b00e-1146b7ac83e0"
+
+[compat]
+ArgParse = "1.2"
+DateFormats = "0.1.20"
+VirtualObservatory = "0.1.18"
+julia = "1.10"
