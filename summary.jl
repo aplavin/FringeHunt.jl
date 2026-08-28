@@ -62,10 +62,12 @@ function report(file; io=stdout)
     bls = @p cross.baseline map(antenna_names) distinct
     ants = @p bls flatmap(identity) distinct collect sort
     sids = @p cross.source_id distinct
-    srcnames = @p sids map(sources(uvd)[_].name) collect sort
     tmin, tmax = extrema(cross.datetime)
 
-    per_source = map(sid -> source_grids(wt, sid), sids)
+    per_source = map(sids) do sid
+        (; name=sources(uvd)[sid].name, source_grids(wt, sid)...)
+    end
+    srcnames = @p per_source map(_.name) sort
     grids = @p per_source flatmap(_.grids) StructArray
     isempty(grids) && error("no fittable data: every scan × baseline segment has < 2 time samples")
     nscans = sum(g -> length(g.durations), per_source)
@@ -86,6 +88,12 @@ function report(file; io=stdout)
     println(io)
     println(io, "antennas   ", join(ants, ", "))
     println(io, "sources    ", join(srcnames, ", "))
+    println(io)
+    println(io, "scan spans by source")
+    foreach(sort(per_source; by=src -> src.name)) do src
+        println(io, "  $(src.name)  $(fmt(sum(src.durations), u"hr")) total (",
+                "$(length(src.durations)) scans, $(fmt_span(src.durations, u"s")) each)")
+    end
     println(io)
     println(io, "frequency/delay — per IF")
     println(io, "  IFs                 ", join(ifdesc, ", "))
